@@ -16,6 +16,8 @@ end
 -- кодирует через encodeFn.
 local function Encode(tbl, encodeFn)
 	if not ns.CanCompress() then return end
+	-- серверы в именах — номерами (RealmPack.lua); исходная таблица не меняется
+	if ns.PackNamesDeep then tbl = ns.PackNamesDeep(tbl) end
 	local ok, s = pcall(AceSerializer.Serialize, AceSerializer, tbl)
 	if not ok or type(s) ~= "string" then return end
 	local c = LibDeflate:CompressDeflate(s, { level = 9 })
@@ -35,7 +37,8 @@ local function Decode(blob, decoders)
 	d = LibDeflate:DecompressDeflate(d)
 	if not d then return end
 	local ok, data = AceSerializer:Deserialize(d)
-	if ok then return data end
+	-- старые записи с полными именами проходят без изменений
+	if ok then return ns.UnpackNamesDeep and ns.UnpackNamesDeep(data) or data end
 end
 
 -- ============================================================================
@@ -61,7 +64,7 @@ function ns.DecodeEntry(blob)
 	return Decode(blob, {
 		function(b)
 			return LibDeflate:DecodeForPrint(b)
-		end
+		end,
 		function(b)
 			return LibDeflate:DecodeForWoWAddonChannel(b)
 		end,

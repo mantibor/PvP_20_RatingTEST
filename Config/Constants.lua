@@ -3,6 +3,8 @@ local addonName, ns = ...
 -- Network & Protocol
 ns.PREFIX = "PVP20R" -- Префикс для аддон-сообщений оставляем как был
 ns.PROTOCOL_VERSION = "2"
+-- Метка сборки очереди, видна в /dev у каждого игрока. Менять при каждой раздаче.
+ns.QUEUE_BUILD = "10.10-05"
 
 -- Time & Epochs
 ns.EPOCH_MIN = 1782864000

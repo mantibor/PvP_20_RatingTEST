@@ -84,15 +84,16 @@ local function RecomputeRatings()
 
         for i, s in ipairs(rows) do
             local guid = ns.SafeGuid(s.guid)
-            local postRating = 0
+            local postRating, lastChange = 0, 0
             if ns.GetArchiveStatsForGuid then
                 local stats = ns.GetArchiveStatsForGuid(guid)
                 if stats and stats[archiveKey] then
                     postRating = stats[archiveKey].rating or 0
+                    lastChange = stats[archiveKey].lastChange or 0
                 end
             end
             playerData[i] = {
-                guid = guid, faction = s.faction, postRating = postRating,
+                guid = guid, faction = s.faction, postRating = postRating, lastChange = lastChange,
                 won = (winnerFaction ~= nil) and (s.faction == winnerFaction),
             }
             if s.faction == myFaction then allySumPost = allySumPost + postRating; allyN = allyN + 1
@@ -111,11 +112,12 @@ local function RecomputeRatings()
             local entry
 
             if matchComplete then
-                local enemyAvg = (data.faction == myFaction) and realEnemyAvgPost or realAllyAvgPost
-                local calcDelta = ns.CalculateBGRatingDelta and ns.CalculateBGRatingDelta(postRating, enemyAvg, won) or 0
-                local oldRating = postRating - calcDelta
-                if oldRating < 0 then oldRating = 0; calcDelta = postRating end
-                entry = { new = postRating, change = calcDelta, old = oldRating, hasData = true }
+                -- Матч уже в архиве (Match.lua пишет его на PVP_MATCH_COMPLETE), и симуляция
+                -- Glicko-2 в Rating.lua посчитала его последним: «до» = «после» − изменение.
+                -- Старая обратная формула ns.CalculateBGRatingDelta из модели убрана.
+                local calcDelta = data.lastChange
+                local oldRating = math.max(postRating - calcDelta, 0)
+                entry = { new = postRating, change = postRating - oldRating, old = oldRating, hasData = true }
             else
                 entry = { new = postRating, change = 0, old = postRating, hasData = postRating > 0 }
             end
@@ -159,12 +161,34 @@ local function RecomputeRatings()
         local effAllyAvg = EffectiveAvg(realAllyAvg, allyN)
         local effEnemyAvg = EffectiveAvg(realEnemyAvg, enemyN)
 
+        -- Средний RD стороны — для Glicko-2 «неуверенность» соперника.
+        local function AvgRD(wantAlly)
+            local sum, n = 0, 0
+            for _, s in ipairs(rows) do
+                local rec = ns.SkirmishDB and ns.SkirmishDB[ns.SafeGuid(s.guid)]
+                if (s.faction == myFaction) == wantAlly and type(rec) == "table" and tonumber(rec.rd) then
+                    sum, n = sum + tonumber(rec.rd), n + 1
+                end
+            end
+            return n > 0 and sum / n or 350
+        end
+        local allyRD, enemyRD = AvgRD(true), AvgRD(false)
+
         for i, s in ipairs(rows) do
             local isAlly = (s.faction == myFaction)
             local won = (winnerFaction ~= nil) and (s.faction == winnerFaction)
             local guid = ns.SafeGuid(s.guid)
             local old, has = CachedRating(guid)
-            local newRating = ns.ComputeNewRatingSkirmish(old, has, won, isAlly and effEnemyAvg or effAllyAvg, isAlly and effAllyAvg or effEnemyAvg)
+            -- Прогноз по Glicko-2 (RatingMath.lua, режим SKIRMISH) на копии записи:
+            -- пересчёт идёт при каждом обновлении таблицы, настоящую SkirmishDB не трогаем.
+            local newRating = old
+            if has then
+                local rec = ns.SkirmishDB[guid]
+                local scratch = { [guid] = { rating = old, rd = tonumber(rec.rd) or 350,
+                    volatility = tonumber(rec.volatility) or 0.06, matches = tonumber(rec.matches) or 0 } }
+                newRating = ns.UpdateGlicko2Rating(guid, isAlly and effEnemyAvg or effAllyAvg,
+                    isAlly and enemyRD or allyRD, won, "SKIRMISH", scratch) or old
+            end
             local change = has and (newRating - old) or 0
             local entry = { new = has and newRating or 0, change = change, old = has and old or 0, hasData = has }
             ns._skirmishRatingsByIndex[i] = entry

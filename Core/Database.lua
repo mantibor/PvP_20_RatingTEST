@@ -303,6 +303,23 @@ f:SetScript("OnEvent", function(self, event, arg1)
         if ns.InitArchiveKeys then
             ns.InitArchiveKeys()
         end
+
+        -- Однократный перевод архива матчей на номера серверов (RealmPack.lua).
+        -- Кэш стычек, вайтлист и чёрный список перепаковываются сами на PLAYER_LOGOUT,
+        -- а записи матчей лежат готовыми блобами — их перепаковываем здесь один раз.
+        if regionDB["RealmPack"] ~= 1 and ns.CanCompress() then
+            local done = 0
+            for ts, raw in pairs(matchDB) do
+                local blob = type(raw) == "string" and raw or (type(raw) == "table" and rawget(raw, "blob"))
+                if type(ts) == "number" and type(blob) == "string" then
+                    local data = ns.DecodeEntry(blob)
+                    local packed = type(data) == "table" and ns.EncodeEntry(data)
+                    if packed then matchDB[ts] = packed; done = done + 1 end
+                end
+            end
+            regionDB["RealmPack"] = 1
+            if ns.DebugPrint then ns.DebugPrint("RealmPack: архив матчей переведён, записей " .. done) end
+        end
         
         local skirmishFilter = function(k, v)
             return type(k) == "string" and type(v) == "table"

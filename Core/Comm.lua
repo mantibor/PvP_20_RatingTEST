@@ -94,8 +94,32 @@ function ns.CanSendAddonMessage()
     return true
 end
 
+-- Сообщения очереди (Q_STAT, WG_SETUP, H_LIST…) — «ТЕГ_» в начале; пакеты
+-- кэша стычек закодированы LibDeflate и подчёркивания не содержат.
+function ns.IsQueuePayload(text)
+    return type(text) == "string" and text:match("^%u+_") ~= nil
+end
+
+-- Ключи очередей в сети короче: SOLO_SHUFFLE ↔ SS, ARENA_5V5 ↔ 5V5.
+-- Меняем только поле целиком (между запятыми), имена игроков не задеваются.
+local KEY_PACK = { SOLO_SHUFFLE = "SS", ARENA_5V5 = "5V5" }
+local KEY_UNPACK = { SS = "SOLO_SHUFFLE", ["5V5"] = "ARENA_5V5" }
+local function MapFields(text, map)
+    return (text:gsub("[^,]+", map))
+end
+-- Заодно серверы в именах — номерами (Utils/RealmPack.lua).
+function ns.PackQueueKeys(text)
+    if not ns.IsQueuePayload(text) then return text end
+    return ns.PackNamesInText(MapFields(text, KEY_PACK))
+end
+function ns.UnpackQueueKeys(text)
+    if not ns.IsQueuePayload(text) then return text end
+    return ns.UnpackNamesInText(MapFields(text, KEY_UNPACK))
+end
+
 function ns.SendAddonMessage(channel, target, payload, prio)
     if not payload or not AceComm or not ns.CanSendAddonMessage() then return false end
+    payload = ns.PackQueueKeys(payload)
     Comm:SendCommMessage(ns.PREFIX, payload, channel, target, prio or "BULK")
     return true
 end
@@ -242,7 +266,20 @@ local function OnCommReceived(prefix, payload, sender, distribution)
     local myName = ns.FormatNameRealm(UnitName("player"))
     local normalizedSender = ns.FormatNameRealm(sender)
     if normalizedSender and normalizedSender ~= myName then ns.AddPlayer(normalizedSender) end
-    
+
+    -- Сообщения очереди длиннее 255 байт (WG_SETUP из шести кириллических
+    -- имён — 311) AceComm режет на куски, а очередь слушает сырой CHAT_MSG_ADDON
+    -- и кусков не узнаёт. Собранное целиком отдаём ей отсюда. Короткие она
+    -- уже получила сама, их не дублируем.
+    if #payload > 255 and ns.IsQueuePayload(payload) then
+        payload = ns.UnpackQueueKeys(payload)
+        if ns.QLog then ns.QLog("<< " .. tostring(sender) .. " [" .. tostring(distribution) .. ", из частей]: " .. payload) end
+        if ns.StateMachine and ns.StateMachine.HandleQueueMessage then
+            ns.StateMachine.HandleQueueMessage(sender, payload)
+        end
+        return
+    end
+
     local data = ns.DecodePayload(payload)
     if not data or data.v ~= ns.PROTOCOL_VERSION then return end
     
