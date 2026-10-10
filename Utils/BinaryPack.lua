@@ -499,3 +499,130 @@ function ns.EncodeMatch(db)
 	local off = ns.GetRegionDB and ns.GetRegionDB()["BinaryOff"]
 	return (not off and ns.EncodeBinary("~M", db)) or ns.EncodeEntry(db)
 end
+
+-- ============================================================================
+-- Сообщения очереди (Q_STAT, H_LIST, H_LIST_RESP, WG_SETUP…) — одним пакетом
+-- ============================================================================
+-- Текст режется на элементы, каждый — 3 бита вида:
+--   0 кусок текста: 6 бит длины, 1 бит «только ASCII», по 7 или 8 бит на байт
+--   1 ник «Имя-Сервер»: имя как выше + номер сервера в таблице сообщения,
+--     2 бита роли от хоста (=T/=H/=D) и 2 бита пометки лидера (*/+)
+--   2 число из 3+ цифр без ведущего нуля (время, счётчики): varint
+--   3–7 разделители , ; | ~ :
+-- Серверы сообщения (предложение Харфа): различные номера по возрастанию,
+-- первый целиком, дальше разности — в EU номера кучкуются (500–647,
+-- 1080–1127…), разности маленькие. Ник хранит только индекс в этой таблице.
+-- Очередь об этом не знает: упаковка в ns.PackQueueKeys, распаковка в
+-- ns.UnpackQueueKeys (Comm.lua), туда приходит уже прежний текст.
+local QUEUE_TAG = "Q_B" -- «Q_» — чтобы IsQueuePayload и /dev узнавали пакет
+local SEP_CODE = { [","] = 3, [";"] = 4, ["|"] = 5, ["~"] = 6, [":"] = 7 }
+local SEP_CHAR = { [3] = ",", [4] = ";", [5] = "|", [6] = "~", [7] = ":" }
+local ROLE_CODE, ROLE_CHAR = { T = 1, H = 2, D = 3 }, { [1] = "T", [2] = "H", [3] = "D" }
+local MARK_CODE, MARK_CHAR = { ["*"] = 1, ["+"] = 2 }, { [1] = "*", [2] = "+" }
+
+-- Разбор текста на элементы
+local function Items(text)
+	local items, realms = {}, {}
+	local function literal(s)
+		for i = 1, #s, 63 do items[#items + 1] = { kind = 0, text = s:sub(i, i + 62) } end
+	end
+	local function plain(s)
+		-- числа из 3+ цифр без ведущего нуля — varint, остальное текстом
+		local pos = 1
+		while pos <= #s do
+			local a, b = s:find("[1-9]%d%d+", pos)
+			if not a then literal(s:sub(pos)); break end
+			if a > pos then literal(s:sub(pos, a - 1)) end
+			local digits = s:sub(a, b)
+			if #digits <= 15 then items[#items + 1] = { kind = 2, value = tonumber(digits) }
+			else literal(digits) end
+			pos = b + 1
+		end
+	end
+	for token, sep in text:gmatch("([^,;|~:]*)([,;|~:]?)") do
+		if token ~= "" then
+			local core, role, mark = token:match("^(.-)=([THD])([%*%+]?)$")
+			if not core then core, mark = token:match("^(.-)([%*%+]?)$") end
+			local name, realm = core:match("^([^%-]+)%-([^%-]+)$")
+			local id = realm and ns.RealmIdOf and ns.RealmIdOf(realm)
+			-- английское имя сервера разжалось бы в родное — такой ник оставляем текстом
+			if id and ns.RealmNameOf(id) ~= realm then id = nil end
+			local chars = id and LowerChars(name)
+			if chars and #chars <= 15 then
+				items[#items + 1] = { kind = 1, name = name, realm = id, role = ROLE_CODE[role] or 0, mark = MARK_CODE[mark] or 0 }
+				realms[id] = true
+			else
+				plain(token)
+			end
+		end
+		if sep ~= "" then items[#items + 1] = { kind = SEP_CODE[sep] } end
+	end
+	return items, realms
+end
+
+local function BitsFor(n) local b = 0; while lshift(1, b) < n do b = b + 1 end; return b end
+
+function ns.PackQueueBinary(text)
+	local ok, packed = pcall(function()
+		local items, realmSet = Items(text)
+		local realms, index = {}, {}
+		for id in pairs(realmSet) do realms[#realms + 1] = id end
+		table.sort(realms)
+		local w = Writer()
+		w.byte(FORMAT)
+		w.varint(#realms)
+		local prev = 0
+		for i, id in ipairs(realms) do w.varint(id - prev); prev = id; index[id] = i - 1 end
+		local idxBits = BitsFor(#realms)
+		w.varint(#items)
+		for _, it in ipairs(items) do
+			w.bits(it.kind, 3)
+			if it.kind == 0 then
+				local ascii = not it.text:find("[\128-\255]")
+				w.bits(#it.text, 6); w.bits(ascii and 1 or 0, 1)
+				for k = 1, #it.text do w.bits(sbyte(it.text, k), ascii and 7 or 8) end
+			elseif it.kind == 1 then
+				WriteName(w, it.name)
+				w.bits(index[it.realm], idxBits)
+				w.bits(it.role, 2); w.bits(it.mark, 2)
+			elseif it.kind == 2 then
+				w.varint(it.value)
+			end
+		end
+		return QUEUE_TAG .. CobsEncode(w.result())
+	end)
+	if ok then return packed end
+end
+
+function ns.UnpackQueueBinary(payload)
+	if type(payload) ~= "string" or payload:sub(1, #QUEUE_TAG) ~= QUEUE_TAG then return end
+	local bytes = CobsDecode(payload:sub(#QUEUE_TAG + 1))
+	if not bytes then return end
+	local ok, text = pcall(function()
+		local r = Reader(bytes)
+		if r.byte() ~= FORMAT then error("неизвестный формат") end
+		local realms, prev = {}, 0
+		for i = 1, r.varint() do prev = prev + r.varint(); realms[i] = prev end
+		local idxBits = BitsFor(#realms)
+		local out = {}
+		for _ = 1, r.varint() do
+			local kind = r.bits(3)
+			if kind == 0 then
+				local len, width = r.bits(6), (r.bits(1) == 1) and 7 or 8
+				for _ = 1, len do out[#out + 1] = schar(r.bits(width)) end
+			elseif kind == 1 then
+				local name = ReadName(r)
+				local realm = ns.RealmNameOf(realms[r.bits(idxBits) + 1]) or error("сервер не найден")
+				local role, mark = r.bits(2), r.bits(2)
+				out[#out + 1] = name .. "-" .. realm .. (role > 0 and ("=" .. ROLE_CHAR[role]) or "") .. (MARK_CHAR[mark] or "")
+			elseif kind == 2 then
+				out[#out + 1] = string.format("%d", r.varint())
+			else
+				out[#out + 1] = SEP_CHAR[kind]
+			end
+		end
+		if not r.done() then error("лишние байты") end
+		return concat(out)
+	end)
+	if ok then return text end
+end

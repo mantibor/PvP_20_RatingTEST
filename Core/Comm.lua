@@ -107,13 +107,19 @@ local KEY_UNPACK = { SS = "SOLO_SHUFFLE", ["5V5"] = "ARENA_5V5" }
 local function MapFields(text, map)
     return (text:gsub("[^,]+", map))
 end
--- Заодно серверы в именах — номерами (Utils/RealmPack.lua).
+-- Дальше — двоичный пакет «Q_B…» (Utils/BinaryPack.lua), если он короче
+-- и разжимается в тот же текст; иначе серверы в именах номерами (RealmPack.lua).
 function ns.PackQueueKeys(text)
     if not ns.IsQueuePayload(text) then return text end
-    return ns.PackNamesInText(MapFields(text, KEY_PACK))
+    text = MapFields(text, KEY_PACK)
+    local packed = ns.PackNamesInText(text)
+    local bin = ns.PackQueueBinary(text)
+    if bin and #bin < #packed and ns.UnpackQueueBinary(bin) == text then return bin end
+    return packed
 end
 function ns.UnpackQueueKeys(text)
     if not ns.IsQueuePayload(text) then return text end
+    text = ns.UnpackQueueBinary(text) or text
     return ns.UnpackNamesInText(MapFields(text, KEY_UNPACK))
 end
 
