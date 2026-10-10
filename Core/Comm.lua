@@ -188,7 +188,7 @@ local function GetRandomCacheBatch()
         snapshot[guid] = { n = rec.name, r = rec.rating, b = rec.bestRating or rec.rating, p = rec.played or 0, w = rec.won or 0, c = rec.class, u = rec.lastUpdate or now }
         SessionSentGUIDs[guid] = true
     end
-    return ns.EncodeForSend({ v = ns.PROTOCOL_VERSION, s = snapshot })
+    return ns.EncodeBinary("~S", snapshot) or ns.EncodeForSend({ v = ns.PROTOCOL_VERSION, s = snapshot })
 end
 ns.GetRandomCacheBatch = GetRandomCacheBatch
 
@@ -280,7 +280,12 @@ local function OnCommReceived(prefix, payload, sender, distribution)
         return
     end
 
-    local data = ns.DecodePayload(payload)
+    -- двоичные пакеты (BinaryPack.lua) — в тот же вид, что прежние таблицы
+    local data
+    local bin, tag = ns.DecodeBinary(payload)
+    if tag == "~S" then data = { v = ns.PROTOCOL_VERSION, s = bin }
+    elseif tag == "~W" then data = { v = ns.PROTOCOL_VERSION, pd = bin }
+    else data = ns.DecodePayload(payload) end
     if not data or data.v ~= ns.PROTOCOL_VERSION then return end
     
     -- 1. Запрос кэша игроков (REQ) — отвечаем батчем + хендшейком
@@ -368,7 +373,7 @@ local function OnCommReceived(prefix, payload, sender, distribution)
                     if type(raw) == "string" then
                         matches[tostring(ts)] = raw
                     elseif type(raw) == "table" and ns.CanCompress() then
-                        matches[tostring(ts)] = ns.EncodeEntry(raw)
+                        matches[tostring(ts)] = ns.EncodeMatch(raw)
                     end
                 end
             end
@@ -401,7 +406,7 @@ local function OnCommReceived(prefix, payload, sender, distribution)
     if data.pdr then
         local pd = ns.GetWhitelistDB()
         if next(pd) then
-            local payload = ns.EncodeForSend({ v = ns.PROTOCOL_VERSION, pd = pd })
+            local payload = ns.EncodeBinary("~W", pd) or ns.EncodeForSend({ v = ns.PROTOCOL_VERSION, pd = pd })
             if payload then ns.SendWhisper(payload, normalizedSender) end
         end
         return
@@ -483,7 +488,7 @@ local function HandlePlayerLogin()
         if not ns.CanSendAddonMessage() then return end
         local fullSnapshot = ns.BuildFullCacheSnapshot()
         if fullSnapshot and next(fullSnapshot) then
-            local payload = ns.EncodeForSend({ v = ns.PROTOCOL_VERSION, s = fullSnapshot })
+            local payload = ns.EncodeBinary("~S", fullSnapshot) or ns.EncodeForSend({ v = ns.PROTOCOL_VERSION, s = fullSnapshot })
             if payload then ns.SendGuild(payload) end
         end
         ns.SendHandshake("GUILD", nil)

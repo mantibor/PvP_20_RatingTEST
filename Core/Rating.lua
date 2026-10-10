@@ -14,7 +14,7 @@ function ns.InitArchiveKeys()
             if isBlob or (isTable and type(rawget(data, "blob")) == "string") then
                 kept[#kept + 1] = ts
             elseif isTable and rawget(data, "matchType") and type(rawget(data, "scores")) == "table" and ns.CanCompress() then
-                local blob = ns.EncodeEntry(data)
+                local blob = ns.EncodeMatch(data)
                 if blob then 
                     matchDB[ts] = blob
                     kept[#kept + 1] = ts

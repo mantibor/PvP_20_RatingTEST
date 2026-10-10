@@ -27,6 +27,9 @@ end
 -- Внутренняя функция распаковки. Пробует каждый декодер из списка,
 -- затем DecompressDeflate и Deserialize.
 local function Decode(blob, decoders)
+	-- двоичный формат «~X…» (BinaryPack.lua)
+	local bin = ns.DecodeBinary and ns.DecodeBinary(blob)
+	if bin then return bin end
 	if not ns.CanCompress() or type(blob) ~= "string" then return end
 	local d
 	for _, dec in ipairs(decoders) do
