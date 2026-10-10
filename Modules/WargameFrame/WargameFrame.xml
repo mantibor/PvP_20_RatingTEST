@@ -1,0 +1,125 @@
+<Ui xmlns="http://www.blizzard.com/wow/ui/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.blizzard.com/wow/ui/ ..\FrameXML\UI.xsd">
+    <Frame name="WargameFrame" toplevel="true" inherits="PortraitFrameTemplate" hidden="true" mixin="WargameFrameMixin" enableMouse="true" registerForDrag="LeftButton" movable="true">
+        <Size x="354" y="428"/>
+        <Anchors>
+            <Anchor point="CENTER" x="0" y="50"/>
+        </Anchors>
+        <Frames>
+            <DropdownButton name="$parent.BracketDropdown" parentKey="BracketDropdown" inherits="WowStyle1DropdownTemplate">
+                <Size x="110" y="26"/>
+                <Anchors>
+                    <Anchor point="TOPLEFT" x="60" y="-30"/>
+                </Anchors>
+            </DropdownButton>
+            <DropdownButton name="$parent.MapDropdown" parentKey="MapDropdown" inherits="WowStyle1DropdownTemplate">
+                <Size x="160" y="26"/>
+                <Anchors>
+                    <Anchor point="TOPRIGHT" x="-8" y="-30"/>
+                </Anchors>
+            </DropdownButton>
+            <Frame name="$parent.Inset" parentKey="Inset" inherits="InsetFrameTemplate" frameStrata="MEDIUM">
+                <Anchors>
+                    <Anchor point="TOPLEFT" x="5" y="-85"/>
+                    <Anchor point="BOTTOMRIGHT" x="-5" y="30"/>
+                </Anchors>
+            </Frame>
+            <Frame name="$parent.ScrollBox" parentKey="ScrollBox" inherits="WowScrollBoxList">
+                <Anchors>
+                    <Anchor point="TOPLEFT" relativeKey="$parent.Inset" relativePoint="TOPLEFT" x="4" y="-4"/>
+                    <Anchor point="BOTTOMRIGHT" relativeKey="$parent.Inset" relativePoint="BOTTOMRIGHT" x="-22" y="2"/>
+                </Anchors>
+            </Frame>
+            <EventFrame name="$parent.ScrollBar" parentKey="ScrollBar" inherits="MinimalScrollBar">
+                <Anchors>
+                    <Anchor point="TOPLEFT" relativeKey="$parent.ScrollBox" relativePoint="TOPRIGHT" x="5" y="-4"/>
+                    <Anchor point="BOTTOMLEFT" relativeKey="$parent.ScrollBox" relativePoint="BOTTOMRIGHT" x="5" y="2"/>
+                </Anchors>
+            </EventFrame>
+            <EditBox name="$parent.SearchBox" parentKey="SearchBox" inherits="SearchBoxTemplate" letters="0" autoFocus="false">
+                <Size x="120" y="20"/>
+                <Anchors>
+                    <Anchor point="BOTTOMRIGHT" relativeKey="$parent.Inset" relativePoint="TOPRIGHT" x="-2" y="3"/>
+                </Anchors>
+                <Scripts>
+                    <OnTextChanged>
+                        SearchBoxTemplate_OnTextChanged(self)
+                        WargameFrame.searchText = self:GetText():lower()
+                        WargameFrame:RefreshFriendList()
+                    </OnTextChanged> 
+                </Scripts>
+            </EditBox>
+            <CheckButton name="$parent.TargetCheckButton" parentKey="TargetCheckButton" inherits="MinimalCheckboxArtTemplate">
+                <Size x="22" y="22"/>
+                <Anchors>
+                    <Anchor point="BOTTOMLEFT" relativeKey="$parent" relativePoint="BOTTOMLEFT" x="5" y="5"/>
+                </Anchors>
+                <Layers>
+                    <Layer level="ARTWORK">
+                        <FontString parentKey="Text" inherits="GameFontHighlight">
+                            <Anchors>
+                                <Anchor point="LEFT" relativePoint="RIGHT" x="2" y="0"/>
+                            </Anchors>
+                        </FontString>
+                    </Layer>
+                </Layers>
+                <Scripts>
+                    <OnLoad>
+                        self:SetChecked(UseTarget)
+                    </OnLoad>
+                    <OnClick function="WargameFrameTargetCheckButton_OnClick"/>
+                </Scripts>
+            </CheckButton>
+            <Button name="$parent.StartButton" parentKey="StartButton" inherits="UIPanelButtonTemplate" motionScriptsWhileDisabled="true" text="START_WARGAME">
+                <Size x="132" y="22"/>
+                <Anchors>
+                    <Anchor point="BOTTOMRIGHT" x="-6" y="5"/>
+                </Anchors>
+                <Scripts>
+                    <OnClick function="WargameFrameStartButton_OnClick"/>
+                    <OnEnter>
+                        if self.tooltip then
+                            GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+                            GameTooltip:SetText(self.tooltip, RED_FONT_COLOR.r, RED_FONT_COLOR.g, RED_FONT_COLOR.b, 1, 1)
+                        end
+                    </OnEnter>
+                    <OnLeave>
+                        GameTooltip:Hide() 
+                    </OnLeave>
+                </Scripts>
+            </Button>
+        </Frames>
+        <Layers>
+            <Layer level="ARTWORK">
+                <FontString name="$parent.PartyLeaderTitle" parentKey="PartyLeaderTitle" inherits="GameFontNormal">
+                    <Anchors>
+                        <Anchor point="BOTTOMLEFT" relativeKey="$parent.Inset" relativePoint="TOPLEFT" x="15" y="6"/>
+                    </Anchors>
+                    <Scripts>
+                        <OnLoad>
+                            self:SetText(ENEMY .. " " .. PARTY_LEADER .. ":")
+                        </OnLoad>
+                    </Scripts>
+                </FontString>
+            </Layer>
+        </Layers>
+        <Scripts>
+            <OnLoad method="OnLoad"/>
+            <OnEvent method="OnEvent"/>
+            <OnShow method="OnShow"/>
+            <OnHide method="OnHide"/>
+        </Scripts>
+    </Frame>
+    
+    <!-- НАСЛЕДУЕМ нативный FriendsListButtonTemplate. Он уже содержит background, status, gameIcon, name, info, Favorite и travelPassButton с правильными скриптами -->
+    <Button name="WargameFrameFriendButtonTemplate" inherits="FriendsListButtonTemplate" virtual="true" mixin="WargameFrameFriendButtonMixin">
+        <Scripts>
+            <OnLoad method="OnLoad"/>
+            <!-- OnEnter и OnLeave наследуются от FriendsListButtonTemplate и работают идеально -->
+            <OnClick method="OnClick"/>
+        </Scripts>
+    </Button>
+
+    <Frame name="WargameFrameFriendDividerTemplate" inherits="FriendsFrameFriendDividerTemplate" virtual="true" enableMouse="true">
+        <Size y="16"/>
+    </Frame>
+</Ui>

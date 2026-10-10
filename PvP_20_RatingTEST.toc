@@ -1,0 +1,52 @@
+## Interface: 120005, 120007, 120100
+## Title: |cFFFF8000PvP 20 RatingTEST|r
+## Notes: Provides a PvP rating system at level 20.
+## Author: mantibor1
+## Category: LvL20
+## Version: 2.3.0
+## IconTexture: Interface\ICONS\achievement_featsofstrength_gladiator_07
+## SavedVariables: PvP_20_RatingDB, PvP20RLeaderboardSettings
+## SavedVariablesPerCharacter: PVP20RCharDB
+
+Libs\LibStub\LibStub.lua
+Libs\CallbackHandler-1.0\CallbackHandler-1.0.lua
+Libs\AceDB-3.0\AceDB-3.0.lua
+Libs\LibDeflate\LibDeflate.lua
+Libs\AceSerializer-3.0\AceSerializer-3.0.lua
+Libs\ChatThrottleLib\ChatThrottleLib.lua
+Libs\AceComm-3.0\AceComm-3.0.lua
+
+Config\Constants.lua
+Config\Localization.lua
+Config\Maps.lua
+Config\PvPTiers.lua
+
+Utils\Player.lua
+Utils\Time.lua
+Utils\Compression.lua
+Utils\RatingMath.lua
+
+Core\Database.lua
+Core\Rating.lua
+Core\Match.lua
+Core\Comm.lua
+
+Modules\InspectFrame\InspectFrame.lua
+Modules\InspectFrame\InspectFrame.xml
+
+Modules\HonorFrame\HonorFrame.lua
+Modules\HonorFrame\HonorFrame.xml
+
+Modules\WargameFrame\WargameFrame.lua
+Modules\WargameFrame\WargameFrame.xml
+
+Modules\Leaderboard\DataAggregator.lua
+Modules\Leaderboard\Leaderboard.lua
+Modules\Leaderboard\Leaderboard.xml
+
+Modules\CustomQueue\StateMachine.lua
+Modules\CustomQueue\WargameFlow.lua
+
+# -- Modules\Scoreboard.lua
+Modules\InspectQueue.lua
+Modules\Debug.lua

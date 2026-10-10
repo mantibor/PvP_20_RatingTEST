@@ -1,0 +1,89 @@
+<Ui xmlns="http://www.blizzard.com/wow/ui/">    
+	<Frame name="InspectPvP20RatingTemplate" virtual="true">
+		<Size x="160" y="60"/>
+		<Layers>
+			<Layer level="BORDER">
+				<FontString name="$parentBGType" parentKey="BGType" inherits="Game13FontShadow">
+					<Anchors>
+						<Anchor point="TOPLEFT" x="22" y="0"/>
+					</Anchors>
+					<Color r="1" g="1" b="1"/>
+				</FontString>
+				<FontString parentKey="RatingLabel" inherits="GameFontNormal" text="PVP_RATING">
+					<Anchors>
+						<Anchor point="TOPLEFT" relativeKey="$parent.BGType" relativePoint="BOTTOMLEFT" x="0" y="-4"/>
+					</Anchors>
+				</FontString>
+				<FontString parentKey="Rating" inherits="GameFontHighlight" text="0">
+					<Anchors>
+						<Anchor point="LEFT" relativeKey="$parent.RatingLabel" relativePoint="RIGHT" x="4" y="0"/>
+					</Anchors>
+				</FontString>
+				<FontString parentKey="RecordLabel" inherits="GameFontNormal" text="PVP_RECORD">
+					<Anchors>
+						<Anchor point="TOPLEFT" relativeKey="$parent.RatingLabel" relativePoint="BOTTOMLEFT" x="0" y="-2"/>
+					</Anchors>
+				</FontString>
+				<FontString parentKey="Record" inherits="GameFontHighlight" text="0">
+					<Anchors>
+						<Anchor point="LEFT" relativeKey="$parent.RecordLabel" relativePoint="RIGHT" x="4" y="0"/>
+					</Anchors>
+				</FontString>
+				<FontString parentKey="Winrate" inherits="GameFontDisable">
+					<Anchors>
+						<Anchor point="LEFT" relativeKey="$parent.Record" relativePoint="RIGHT" x="2" y="0"/>
+					</Anchors>
+				</FontString>
+			</Layer>
+		</Layers>
+	</Frame>
+
+	<Frame name="InspectPvP20RatingFrame" hidden="true">
+		<Size x="160" y="250"/>
+		<Frames>
+			<Frame parentKey="RandomBG" inherits="InspectPvP20RatingTemplate">
+				<Anchors>
+					<Anchor point="TOPLEFT" x="0" y="0"/>
+				</Anchors>
+				<Scripts>
+					<OnLoad>
+						self.BGType:SetText(RANDOM_BATTLEGROUNDS)
+					</OnLoad>
+				</Scripts>
+			</Frame>
+			<Frame parentKey="SkirmishArena" inherits="InspectPvP20RatingTemplate">
+				<Anchors>
+					<Anchor point="TOPLEFT" relativeKey="$parent.RandomBG" relativePoint="BOTTOMLEFT" x="0" y="-2"/>
+				</Anchors>
+				<Scripts>
+					<OnLoad>
+						self.BGType:SetText(ARENA_CASUAL)
+					</OnLoad>
+				</Scripts>
+			</Frame>
+			<Frame parentKey="SoloShuffle" inherits="InspectPvP20RatingTemplate">
+				<Anchors>
+					<Anchor point="TOPLEFT" relativeKey="$parent.SkirmishArena" relativePoint="BOTTOMLEFT" x="0" y="-2"/>
+				</Anchors>
+				<Scripts>
+					<OnLoad>
+						self.BGType:SetText(PVP_RATED_SOLO_SHUFFLE)
+					</OnLoad>
+				</Scripts>
+			</Frame>
+			<Frame parentKey="Wargames" inherits="InspectPvP20RatingTemplate">
+				<Anchors>
+					<Anchor point="TOPLEFT" relativeKey="$parent.SoloShuffle" relativePoint="BOTTOMLEFT" x="0" y="-2"/>
+				</Anchors>
+				<Scripts>
+					<OnLoad>
+						self.BGType:SetText(WARGAMES)
+					</OnLoad>
+				</Scripts>
+			</Frame>
+		</Frames>
+		<Scripts>
+			<OnLoad function="InspectPvP20Rating_UpdateAllData"/>
+		</Scripts>
+	</Frame>
+</Ui>

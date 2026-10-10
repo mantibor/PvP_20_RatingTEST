@@ -1,0 +1,226 @@
+<Ui xmlns="http://www.blizzard.com/wow/ui/">
+    <!-- ==================================================================== -->
+    <!-- Custom Button Template                                                -->
+    <!-- ==================================================================== -->
+    <Button name="PvP20RatingButtonTemplate" virtual="true">
+        <Size x="365" y="56"/>
+        <Layers>
+            <Layer level="OVERLAY">
+                <Texture parentKey="SelectedTexture" atlas="pvpqueue-button-selected" setAllPoints="true" alphaMode="ADD" hidden="true"/>
+            </Layer>
+            <Layer level="ARTWORK" textureSubLevel="1">
+                <Texture parentKey="Anchor">
+                    <Size x="365" y="56"/>
+                    <Anchors>
+                        <Anchor point="TOPLEFT"/>
+                    </Anchors>
+                </Texture>
+                <FontString parentKey="TeamSizeText" inherits="GameFontHighlightHuge">
+                    <Anchors>
+                        <Anchor point="LEFT" relativeKey="$parent.Anchor" x="20" y="7"/>
+                    </Anchors>
+                </FontString>
+                <FontString parentKey="TeamTypeText" inherits="GameFontDisable">
+                    <Anchors>
+                        <Anchor point="LEFT" relativeKey="$parent.Anchor" x="19" y="0"/>
+                        <Anchor point="TOP" relativeKey="$parent.TeamSizeText" relativePoint="BOTTOM" x="0" y="-3"/>
+                    </Anchors>
+                </FontString>
+                <Texture parentKey="TierIcon">
+                    <Size x="40" y="40"/>
+                    <Anchors>
+                        <Anchor point="CENTER" relativeKey="$parent.Anchor" x="-4" y="-1"/>
+                    </Anchors>
+                </Texture>
+                <FontString parentKey="CurrentRating" inherits="GameFontNormalMed3" text="0">
+                    <Anchors>
+                        <Anchor point="LEFT" relativeKey="$parent.TierIcon" relativePoint="RIGHT" x="4" y="0"/>
+                    </Anchors>
+                </FontString>
+                <FontString parentKey="Winrate" inherits="GameFontDisableSmall">
+                    <Anchors>
+                        <Anchor point="TOPLEFT" relativeKey="$parent.CurrentRating" relativePoint="BOTTOMLEFT"/>
+                    </Anchors>
+                </FontString>
+            </Layer>
+        </Layers>
+        <NormalTexture parentKey="NormalTexture" atlas="pvpqueue-button-up"/>
+        <PushedTexture atlas="pvpqueue-button-down"/>
+        <HighlightTexture parentKey="HighlightTexture" atlas="pvpqueue-button-highlight" alphaMode="ADD"/>
+        <Frames>
+            <Frame parentKey="Tier" inherits="PVPTierTemplate">
+                <Anchors>
+                    <Anchor point="CENTER" relativeKey="$parent.Anchor" x="-4" y="-1"/>
+                </Anchors>
+            </Frame>
+        </Frames>
+        <Scripts>
+            <OnClick function="CustomButton_OnClick"/>
+            <OnEnter function="CustomButton_OnEnter"/>
+            <OnMouseDown>
+                if ( self:IsEnabled() ) then
+                    self.Anchor:SetPoint("TOPLEFT", -1, -1);
+                end
+            </OnMouseDown>
+            <OnMouseUp>
+                self.Anchor:SetPoint("TOPLEFT", 0, 0);
+            </OnMouseUp>
+            <OnLeave>
+                GameTooltip:Hide();
+            </OnLeave>
+        </Scripts>
+    </Button>
+
+    <!-- ==================================================================== -->
+    <!-- Tier Frame Template (For Casual Panel Sidebar)                        -->
+    <!-- ==================================================================== -->
+    <Frame name="TierFrame" inherits="PVPTierTemplate" virtual="true">
+        <Layers>
+            <Layer level="ARTWORK">
+                <FontString parentKey="Title" inherits="GameFontNormal" text="PVP_SEASON_HIGH">
+                    <Size x="142" y="0"/>
+                    <Anchors>
+                        <Anchor point="BOTTOM" relativePoint="TOP" x="0" y="8"/>
+                    </Anchors>
+                </FontString>
+            </Layer>
+        </Layers>
+        <Frames>
+            <Frame parentKey="NextTier">
+                <Size x="26" y="26"/>
+                <Anchors>
+                    <Anchor point="TOPLEFT" relativePoint="TOPRIGHT" x="16" y="-17"/>
+                </Anchors>
+                <Layers>
+                    <Layer level="ARTWORK">
+                        <Texture parentKey="Icon" file="2023045" setAllPoints="true" alpha="0.6"/>
+                        <Texture atlas="pvpqueue-sidebar-nextarrow" useAtlasSize="false">
+                            <Size x="16" y="25"/>
+                            <Anchors>
+                                <Anchor point="TOPLEFT" x="-13" y="-1"/>
+                            </Anchors>
+                        </Texture>
+                    </Layer>
+                </Layers>
+                <Scripts>
+                    <OnEnter function="TierFrame_NextTier_OnEnter"/>
+                    <OnLeave>
+                        GameTooltip:Hide();
+                    </OnLeave>
+                </Scripts>
+            </Frame>
+        </Frames>
+        <Scripts>
+            <OnLoad function="TierFrame_OnLoad"/>
+            <OnEnter function="TierFrame_OnEnter"/>            
+            <OnLeave>
+                GameTooltip:Hide();
+            </OnLeave>
+        </Scripts>
+    </Frame>
+
+    <!-- ==================================================================== -->
+    <!-- PvP Tier Template (Icon + Rank Glow)                                -->
+    <!-- ==================================================================== -->
+    <Frame name="PVPTierTemplate" virtual="true">
+        <Size x="40" y="40"/>
+        <Anchors>
+            <Anchor point="CENTER" relativeKey="$parent.Anchor" x="-4" y="-1"/>
+        </Anchors>
+        <Layers>
+            <Layer level="BACKGROUND">
+                <Texture parentKey="Icon">
+                    <Size x="42" y="42"/>
+                    <Anchors>
+                        <Anchor point="CENTER"/>
+                    </Anchors>
+                </Texture>
+            </Layer>
+            <Layer level="BORDER">
+                <Texture parentKey="RankingShadow" atlas="pvpqueue-rankglow" useAtlasSize="true" alphaMode="ADD" hidden="true">
+                    <Anchors>
+                        <Anchor point="CENTER" x="1" y="-3"/>
+                    </Anchors>
+                </Texture>
+            </Layer>
+            <Layer level="ARTWORK">
+                <FontString parentKey="Ranking" inherits="Number12Font_o1">
+                    <Anchors>
+                        <Anchor point="CENTER"/>
+                    </Anchors>
+                </FontString>
+            </Layer>
+        </Layers>
+    </Frame>
+
+    <!-- ==================================================================== -->
+    <!-- Tooltip Frame                                                         -->
+    <!-- ==================================================================== -->
+    <Frame name="PvP20RatingTooltip" parent="UIParent" frameStrata="TOOLTIP" hidden="true" clampedToScreen="true" inherits="TooltipBackdropTemplate, ResizeLayoutFrame">
+        <KeyValues>
+            <KeyValue key="minimumWidth" value="152" type="number"/>
+            <KeyValue key="maximumWidth" value="255" type="number"/>
+            <KeyValue key="widthPadding" value="10" type="number"/>
+            <KeyValue key="heightPadding" value="16" type="number"/>
+        </KeyValues>
+        <Layers>
+            <Layer level="ARTWORK">
+                <FontString parentKey="Title" parentArray="Content" inherits="GameFontNormalMed3">
+                    <Anchors>
+                        <Anchor point="TOPLEFT" x="15" y="-15"/>
+                    </Anchors>
+                </FontString>
+                <FontString parentKey="Tier" parentArray="Content" inherits="GameFontHighlight">
+                    <Anchors>
+                        <Anchor point="TOPLEFT" relativeKey="$parent.Title" relativePoint="BOTTOMLEFT" x="0" y="-2"/>
+                    </Anchors>
+                </FontString>
+                <FontString parentKey="WeeklyLabel" parentArray="Content" inherits="GameFontNormalMed3" text="ARENA_WEEKLY_STATS">
+                    <Anchors>
+                        <Anchor point="TOPLEFT" relativeKey="$parent.Tier" relativePoint="BOTTOMLEFT" x="0" y="-13"/>
+                    </Anchors>
+                </FontString>
+                <FontString parentKey="WeeklyBest" parentArray="Content" inherits="GameFontHighlight">
+                    <Anchors>
+                        <Anchor point="TOPLEFT" relativeKey="$parent.WeeklyLabel" relativePoint="BOTTOMLEFT" x="0" y="-2"/>
+                    </Anchors>
+                </FontString>
+                <FontString parentKey="WeeklyWon" parentArray="Content" inherits="GameFontHighlight">
+                    <Anchors>
+                        <Anchor point="TOPLEFT" relativeKey="$parent.WeeklyBest" relativePoint="BOTTOMLEFT" x="0" y="-2"/>
+                    </Anchors>
+                </FontString>
+                <FontString parentKey="WeeklyPlayed" parentArray="Content" inherits="GameFontHighlight">
+                    <Anchors>
+                        <Anchor point="TOPLEFT" relativeKey="$parent.WeeklyWon" relativePoint="BOTTOMLEFT" x="0" y="-2"/>
+                    </Anchors>
+                </FontString>
+                <FontString parentKey="SeasonLabel" parentArray="Content" inherits="GameFontNormalMed3" text="ARENA_SEASON_STATS">
+                    <Anchors>
+                        <Anchor point="TOPLEFT" relativeKey="$parent.WeeklyPlayed" relativePoint="BOTTOMLEFT" x="0" y="-13"/>
+                    </Anchors>
+                </FontString>
+                <FontString parentKey="SeasonBest" parentArray="Content" inherits="GameFontHighlight">
+                    <Anchors>
+                        <Anchor point="TOPLEFT" relativeKey="$parent.SeasonLabel" relativePoint="BOTTOMLEFT" x="0" y="-2"/>
+                    </Anchors>
+                </FontString>
+                <FontString parentKey="SeasonWon" parentArray="Content" inherits="GameFontHighlight">
+                    <Anchors>
+                        <Anchor point="TOPLEFT" relativeKey="$parent.SeasonBest" relativePoint="BOTTOMLEFT" x="0" y="-2"/>
+                    </Anchors>
+                </FontString>
+                <FontString parentKey="SeasonPlayed" parentArray="Content" inherits="GameFontHighlight">
+                    <Anchors>
+                        <Anchor point="TOPLEFT" relativeKey="$parent.SeasonWon" relativePoint="BOTTOMLEFT" x="0" y="-2"/>
+                    </Anchors>
+                </FontString>
+                <FontString parentKey="ModeDescription" parentArray="Content" wordwrap="true" inherits="GameFontNormal" justifyH="LEFT">
+                    <Anchors>
+                        <Anchor point="TOPLEFT" relativeKey="$parent.SeasonPlayed" relativePoint="BOTTOMLEFT" x="0" y="-13"/>
+                    </Anchors>
+                </FontString>
+            </Layer>
+        </Layers>
+    </Frame>
+</Ui>

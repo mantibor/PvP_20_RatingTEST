@@ -1,0 +1,127 @@
+<Ui xmlns="http://www.blizzard.com/wow/ui/">
+	<Button name="PvP20RLeaderboardRowTemplate" virtual="true">
+		<Size x="600" y="20"/>
+		<Layers>
+			<Layer level="ARTWORK">
+				<FontString parentKey="Rank" inherits="GameFontHighlightSmall" justifyH="CENTER" wordwrap="false">
+					<Size x="30" y="0"/>
+					<Anchors>
+						<Anchor point="LEFT" x="6" y="0"/>
+					</Anchors>
+				</FontString>
+				<Texture parentKey="ClassIcon">
+					<Size x="16" y="16"/>
+					<Anchors>
+						<Anchor point="LEFT" relativeKey="$parent.Rank" relativePoint="RIGHT" x="6" y="0"/>
+					</Anchors>
+					<TexCoords left="0.07" right="0.93" top="0.07" bottom="0.93"/>
+				</Texture>
+				<FontString parentKey="Name" inherits="GameFontHighlightSmall" justifyH="LEFT" wordwrap="false">
+					<Anchors>
+						<Anchor point="LEFT" relativeKey="$parent.ClassIcon" relativePoint="RIGHT" x="8" y="0"/>
+					</Anchors>
+				</FontString>
+				<FontString parentKey="Rating" inherits="GameFontHighlightSmall" justifyH="CENTER" wordwrap="false">
+					<Anchors>
+						<Anchor point="LEFT" relativeKey="$parent.Name" relativePoint="RIGHT" x="-2" y="0"/>
+					</Anchors>
+				</FontString>
+				<FontString parentKey="Best" inherits="GameFontHighlightSmall" justifyH="CENTER" wordwrap="false">
+					<Anchors>
+						<Anchor point="LEFT" relativeKey="$parent.Rating" relativePoint="RIGHT" x="-2" y="0"/>
+					</Anchors>
+				</FontString>
+				<FontString parentKey="Stats" inherits="GameFontHighlightSmall" justifyH="CENTER" wordwrap="false">
+					<Anchors>
+						<Anchor point="LEFT" relativeKey="$parent.Best" relativePoint="RIGHT" x="-2" y="0"/>
+					</Anchors>
+				</FontString>
+				<FontString parentKey="Updated" inherits="GameFontDisableSmall" justifyH="CENTER" wordwrap="false">
+					<Anchors>
+						<Anchor point="LEFT" relativeKey="$parent.Stats" relativePoint="RIGHT" x="-2" y="0"/>
+					</Anchors>
+				</FontString>
+			</Layer>
+		</Layers>
+		<NormalTexture setAllPoints="true" file="Interface\GuildFrame\GuildFrame">
+			<TexCoords left="0.36230469" right="0.38183594" top="0.95898438" bottom="0.99804688"/>
+		</NormalTexture>
+		<HighlightTexture file="Interface\FriendsFrame\UI-FriendsFrame-HighlightBar" alphaMode="ADD" setAllPoints="true"/>
+	</Button>
+
+	<Frame name="MinimalColumnDisplayTemplate" mixin="ColumnDisplayMixin" virtual="true">
+		<Size x="0" y="24"/>
+		<Scripts>
+			<OnLoad method="OnLoad"/>
+		</Scripts>
+	</Frame>
+
+	<Frame name="LeaderboardFrame" parent="PVEFrame" hidden="true" enableMouse="true">
+		<Anchors>
+			<Anchor point="TOPLEFT" x="0" y="-24"/>
+			<Anchor point="BOTTOMRIGHT" x="0" y="2"/>
+		</Anchors>
+		<Frames>
+			<DropdownButton parentKey="SeasonDropdown" inherits="WowStyle1DropdownTemplate">
+				<Size x="140" y="26"/>
+				<Anchors>
+					<Anchor point="TOPLEFT" x="60" y="-8"/>
+				</Anchors>
+			</DropdownButton>
+			<DropdownButton parentKey="BracketDropdown" inherits="WowStyle1DropdownTemplate">
+				<Size x="140" y="26"/>
+				<Anchors>
+					<Anchor point="TOPLEFT" relativeKey="$parent.SeasonDropdown" relativePoint="TOPRIGHT" x="10" y="0"/>
+				</Anchors>
+			</DropdownButton>
+			<DropdownButton parentKey="ClassDropdown" inherits="WowStyle1DropdownTemplate">
+				<Size x="140" y="26"/>
+				<Anchors>
+					<Anchor point="TOPLEFT" relativeKey="$parent.BracketDropdown" relativePoint="TOPRIGHT" x="10" y="0"/>
+				</Anchors>
+			</DropdownButton>
+			<DropdownButton parentKey="RatingFilterDropdown" inherits="WowStyle1FilterDropdownTemplate">
+				<Size x="100" y="18"/>
+				<Anchors>
+					<Anchor point="TOPRIGHT" x="-10" y="-8"/>
+				</Anchors>
+			</DropdownButton>
+			<EditBox parentKey="SearchBox" inherits="SearchBoxTemplate" letters="0" autoFocus="false">
+				<Size x="120" y="20"/>
+				<Anchors>
+					<Anchor point="TOPRIGHT" relativeKey="$parent.RatingFilterDropdown" relativePoint="TOPLEFT" x="-10" y="1"/>
+				</Anchors>
+				<Scripts>
+					<OnTextChanged>
+						SearchBoxTemplate_OnTextChanged(self)
+						Leaderboard_OnSearchTextChanged(self)
+					</OnTextChanged>
+				</Scripts>
+			</EditBox>
+			<Frame parentKey="Inset" inherits="InsetFrameTemplate" frameStrata="MEDIUM">
+				<Anchors>
+					<Anchor point="TOPLEFT" x="10" y="-75"/>
+					<Anchor point="BOTTOMRIGHT" x="-10" y="26"/>
+				</Anchors>
+			</Frame>
+			<Frame parentKey="ColumnDisplay" useParentLevel="true" inherits="MinimalColumnDisplayTemplate" hidden="false">
+				<Anchors>
+					<Anchor point="BOTTOMLEFT" relativeKey="$parent.Inset" relativePoint="TOPLEFT" x="4" y="-1"/>
+					<Anchor point="BOTTOMRIGHT" relativeKey="$parent.Inset" relativePoint="TOPRIGHT" x="-25" y="-1"/>
+				</Anchors>
+			</Frame>
+			<Frame parentKey="ScrollBox" inherits="WowScrollBoxList">
+				<Anchors>
+					<Anchor point="TOPLEFT" relativeKey="$parent.Inset" relativePoint="TOPLEFT" x="4" y="-4"/>
+					<Anchor point="BOTTOMRIGHT" relativeKey="$parent.Inset" relativePoint="BOTTOMRIGHT" x="-25" y="2"/>
+				</Anchors>
+			</Frame>
+			<EventFrame parentKey="ScrollBar" inherits="MinimalScrollBar">
+				<Anchors>
+					<Anchor point="TOPLEFT" relativeKey="$parent.ScrollBox" relativePoint="TOPRIGHT" x="6" y="0"/>
+					<Anchor point="BOTTOMLEFT" relativeKey="$parent.ScrollBox" relativePoint="BOTTOMRIGHT" x="6" y="0"/>
+				</Anchors>
+			</EventFrame>
+		</Frames>
+	</Frame>
+</Ui>
