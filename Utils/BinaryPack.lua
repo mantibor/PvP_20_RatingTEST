@@ -3,15 +3,13 @@ local addonName, ns = ...
 -- ============================================================================
 -- Двоичная упаковка кэша стычек (сеть и SavedVariables), без LibDeflate
 -- ============================================================================
--- Запись — байты, а не таблица AceSerializer:
---   GUID   «Player-1602-0A1B2C3D» → номер сервера (varint) + 4 байта вместо
---          8 шестнадцатеричных знаков; приставка «Player-» не пишется;
---   имя    буквы по 6 бит из своего алфавита (русские + латинские), регистр
---          не пишется: в WoW имя всегда «с заглавной, остальные строчные».
---          Буква не из алфавита или «не тот» регистр — сырым UTF-8;
+-- Запись — поток битов, а не таблица AceSerializer:
+--   GUID   «Player-1602-0A1B2C3D» → 1 бит вида + номер сервера (varint) + 32 бита
+--          вместо 8 шестнадцатеричных знаков; приставка «Player-» не пишется;
+--   имя    алфавит на весь ник (2 бита) и по 5–6 бит на букву, см. «Имя» ниже;
 --   сервер 0 — тот же, что в GUID; иначе номер по LibRealmInfo (RealmPack);
 --          неизвестный библиотеке — строкой;
---   класс  1 байт по ns.CLASS_IDS;
+--   класс  4 бита по ns.CLASS_IDS;
 --   числа  varint (7 бит в байте), время — секунды от ns.EPOCH_MIN.
 -- Готовые байты проходят COBS: в аддон-канале нельзя байт \0. LibEncoding-COBS
 -- берётся, если установлена; иначе — встроенный COBS ниже (тот же алгоритм).
@@ -79,11 +77,19 @@ ns.CobsEncode = function(s) return CobsEncode(s) end
 ns.CobsDecode = function(s) return CobsDecode(s) end
 
 -- ---------------------------------------------------------------------------
--- Запись и чтение байтов
+-- Поток битов: всё пишется подряд, без выравнивания по байтам
 -- ---------------------------------------------------------------------------
 local function Writer()
 	local w = { parts = {}, acc = 0, nbits = 0 }
-	function w.byte(v) w.parts[#w.parts + 1] = schar(v) end
+	function w.bits(v, n)
+		w.acc = bor(lshift(w.acc, n), v); w.nbits = w.nbits + n
+		while w.nbits >= 8 do
+			w.nbits = w.nbits - 8
+			w.parts[#w.parts + 1] = schar(band(rshift(w.acc, w.nbits), 255))
+		end
+		w.acc = band(w.acc, lshift(1, w.nbits) - 1)
+	end
+	function w.byte(v) w.bits(v, 8) end
 	function w.varint(v)
 		v = math.floor(tonumber(v) or 0)
 		if v < 0 then v = 0 end
@@ -93,30 +99,28 @@ local function Writer()
 			w.byte(v > 0 and b + 128 or b)
 		until v == 0
 	end
-	function w.raw(s) w.varint(#s); w.parts[#w.parts + 1] = s end
-	-- биты для имени: копим до байта
-	function w.bits(v, n)
-		w.acc = bor(lshift(w.acc, n), v); w.nbits = w.nbits + n
-		while w.nbits >= 8 do
-			w.nbits = w.nbits - 8
-			w.byte(band(rshift(w.acc, w.nbits), 255))
-		end
-		w.acc = band(w.acc, lshift(1, w.nbits) - 1)
+	function w.raw(s) w.varint(#s); for k = 1, #s do w.byte(sbyte(s, k)) end end
+	function w.result()
+		if w.nbits > 0 then w.parts[#w.parts + 1] = schar(band(lshift(w.acc, 8 - w.nbits), 255)) end
+		return concat(w.parts)
 	end
-	function w.align()
-		if w.nbits > 0 then w.byte(band(lshift(w.acc, 8 - w.nbits), 255)); w.acc, w.nbits = 0, 0 end
-	end
-	function w.result() return concat(w.parts) end
 	return w
 end
 
 local function Reader(s)
 	local r = { pos = 1, acc = 0, nbits = 0 }
-	function r.byte()
-		local b = sbyte(s, r.pos); r.pos = r.pos + 1
-		if not b then error("конец данных") end
-		return b
+	function r.bits(n)
+		while r.nbits < n do
+			local b = sbyte(s, r.pos); r.pos = r.pos + 1
+			if not b then error("конец данных") end
+			r.acc = bor(lshift(r.acc, 8), b); r.nbits = r.nbits + 8
+		end
+		r.nbits = r.nbits - n
+		local v = band(rshift(r.acc, r.nbits), lshift(1, n) - 1)
+		r.acc = band(r.acc, lshift(1, r.nbits) - 1)
+		return v
 	end
+	function r.byte() return r.bits(8) end
 	function r.varint()
 		local v, mul = 0, 1
 		while true do
@@ -127,83 +131,132 @@ local function Reader(s)
 		end
 	end
 	function r.raw()
-		local n = r.varint()
-		local v = s:sub(r.pos, r.pos + n - 1); r.pos = r.pos + n
-		return v
+		local out = {}
+		for k = 1, r.varint() do out[k] = schar(r.byte()) end
+		return concat(out)
 	end
-	function r.bits(n)
-		while r.nbits < n do r.acc = bor(lshift(r.acc, 8), r.byte()); r.nbits = r.nbits + 8 end
-		r.nbits = r.nbits - n
-		local v = band(rshift(r.acc, r.nbits), lshift(1, n) - 1)
-		r.acc = band(r.acc, lshift(1, r.nbits) - 1)
-		return v
-	end
-	function r.align() r.acc, r.nbits = 0, 0 end
-	function r.done() return r.pos > #s end
+	-- конец: целые байты кончились, в последнем — только добивка нулями
+	function r.done() return r.pos > #s and r.acc == 0 end
 	return r
 end
 
 -- ---------------------------------------------------------------------------
--- Имя: 6-битный алфавит
+-- Имя: алфавит на весь ник
 -- ---------------------------------------------------------------------------
-local LOWER = { "а","б","в","г","д","е","ё","ж","з","и","й","к","л","м","н","о","п","р","с","т","у","ф","х","ц","ч","ш","щ","ъ","ы","ь","э","ю","я",
-	"a","b","c","d","e","f","g","h","i","j","k","l","m","n","o","p","q","r","s","t","u","v","w","x","y","z" }
-local UPPER = { "А","Б","В","Г","Д","Е","Ё","Ж","З","И","Й","К","Л","М","Н","О","П","Р","С","Т","У","Ф","Х","Ц","Ч","Ш","Щ","Ъ","Ы","Ь","Э","Ю","Я",
-	"A","B","C","D","E","F","G","H","I","J","K","L","M","N","O","P","Q","R","S","T","U","V","W","X","Y","Z" }
-local SYMBOL_OF_LOWER, SYMBOL_OF_UPPER = {}, {}
-for i, ch in ipairs(LOWER) do SYMBOL_OF_LOWER[ch] = i end
-for i, ch in ipairs(UPPER) do SYMBOL_OF_UPPER[ch] = i end
-local ESCAPE = 0 -- дальше 8 бит длины символа в байтах и сами байты
+-- 2 бита — алфавит, 4 бита — число букв, дальше буквы. Смешанных ников
+-- (кириллица с латиницей) нет: из 1933 ников армори и логов — ни одного.
+--   0 латиница, 5 бит: a–z и пять частых диакритик (ø í ë î è)
+--   1 кириллица, 5 бит: без ё и ъ
+--   2 латиница с диакритикой, 6 бит: a–z и Latin-1 (à…ÿ, ß)
+--   3 как есть, UTF-8: ник длиннее 15 букв или «не по правилам» игры
+-- Код буквы 0 в алфавитах 0–2 — экранирование: 8 бит длины и сами байты.
+-- Регистр не пишется: ник хранится строчными, при чтении первая буква
+-- поднимается. Если ник не равен «Заглавная + строчные» (игра других не
+-- даёт, но вдруг) — алфавит 3, чтобы вернуть его точь-в-точь.
+local function Letters(lower, upper)
+	local t = { lower = {}, upper = {}, code = {} }
+	local i = 0
+	for ch in lower:gmatch("[%z\1-\127\194-\244][\128-\191]*") do i = i + 1; t.lower[i] = ch; t.code[ch] = i end
+	i = 0
+	for ch in upper:gmatch("[%z\1-\127\194-\244][\128-\191]*") do i = i + 1; t.upper[i] = ch end
+	return t
+end
+local LAT = "abcdefghijklmnopqrstuvwxyz"
+local LAT_UP = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+local ALPHABETS = {
+	[0] = Letters(LAT .. "øíëîè", LAT_UP .. "ØÍËÎÈ"),
+	[1] = Letters("абвгдежзийклмнопрстуфхцчшщыьэюя", "АБВГДЕЖЗИЙКЛМНОПРСТУФХЦЧШЩЫЬЭЮЯ"),
+	[2] = Letters(LAT .. "àáâãäåæçèéêëìíîïðñòóôõöøùúûüýþÿß", LAT_UP .. "ÀÁÂÃÄÅÆÇÈÉÊËÌÍÎÏÐÑÒÓÔÕÖØÙÚÛÜÝÞŸß"),
+}
+local WIDTH = { [0] = 5, [1] = 5, [2] = 6 }
+local RAW_NAME = 3
+local ESCAPE = 0
+
+-- строчные и заглавные по всем алфавитам сразу: «ё» и «ъ» — только для регистра
+local TO_LOWER, TO_UPPER = { ["Ё"] = "ё", ["Ъ"] = "ъ" }, { ["ё"] = "Ё", ["ъ"] = "Ъ" }
+for _, a in pairs(ALPHABETS) do
+	for i, low in ipairs(a.lower) do
+		if a.upper[i] ~= low then TO_LOWER[a.upper[i]] = low; TO_UPPER[low] = a.upper[i] end
+	end
+end
 
 local UTF8_CHAR = "[%z\1-\127\194-\244][\128-\191]*"
 
-local function WriteName(w, name)
+-- буквы ника строчными; nil — ник не «Заглавная + строчные»
+local function LowerChars(name)
 	local chars = {}
 	for ch in name:gmatch(UTF8_CHAR) do chars[#chars + 1] = ch end
-	w.varint(#chars)
 	for i, ch in ipairs(chars) do
-		local sym = (i == 1) and SYMBOL_OF_UPPER[ch] or (i > 1 and SYMBOL_OF_LOWER[ch])
+		local low = TO_LOWER[ch] or ch
+		if (i == 1) ~= (TO_LOWER[ch] ~= nil) then return nil end
+		chars[i] = low
+	end
+	return chars
+end
+
+local function Cost(chars, a)
+	local bits = 0
+	for _, ch in ipairs(chars) do
+		bits = bits + WIDTH[a] + (ALPHABETS[a].code[ch] and 0 or 8 + 8 * #ch)
+	end
+	return bits
+end
+
+local function WriteName(w, name)
+	local chars = LowerChars(name)
+	local best, bestCost
+	if chars and #chars <= 15 then
+		for a = 0, 2 do
+			local c = Cost(chars, a)
+			if not bestCost or c < bestCost then best, bestCost = a, c end
+		end
+	end
+	if not best then w.bits(RAW_NAME, 2); w.raw(name); return end
+	w.bits(best, 2); w.bits(#chars, 4)
+	local codes, width = ALPHABETS[best].code, WIDTH[best]
+	for _, ch in ipairs(chars) do
+		local sym = codes[ch]
 		if sym then
-			w.bits(sym, 6)
+			w.bits(sym, width)
 		else
-			w.bits(ESCAPE, 6); w.bits(#ch, 8)
+			w.bits(ESCAPE, width); w.bits(#ch, 8)
 			for k = 1, #ch do w.bits(sbyte(ch, k), 8) end
 		end
 	end
-	w.align()
 end
 
 local function ReadName(r)
-	local n, out = r.varint(), {}
-	for i = 1, n do
-		local sym = r.bits(6)
+	local a = r.bits(2)
+	if a == RAW_NAME then return r.raw() end
+	local letters, width, out = ALPHABETS[a].lower, WIDTH[a], {}
+	for i = 1, r.bits(4) do
+		local sym = r.bits(width)
 		if sym == ESCAPE then
-			local len, bytes = r.bits(8), {}
-			for k = 1, len do bytes[k] = schar(r.bits(8)) end
+			local bytes = {}
+			for k = 1, r.bits(8) do bytes[k] = schar(r.bits(8)) end
 			out[i] = concat(bytes)
 		else
-			out[i] = (i == 1) and UPPER[sym] or LOWER[sym]
+			out[i] = letters[sym]
 		end
 	end
-	r.align()
+	if out[1] then out[1] = TO_UPPER[out[1]] or out[1] end
 	return concat(out)
 end
 
 -- ---------------------------------------------------------------------------
 -- GUID и «Имя-Сервер»
 -- ---------------------------------------------------------------------------
-local GUID_RAW, GUID_PLAYER = 0, 1
-
+-- 1 бит вида: 1 — «Player-сервер-8hex» (номер сервера + 32 бита), 0 — строкой
 local function WriteGuid(w, guid)
 	local server, hex = guid:match("^Player%-(%d+)%-(%x%x%x%x%x%x%x%x)$")
-	if not server then w.byte(GUID_RAW); w.raw(guid); return nil end
-	w.byte(GUID_PLAYER); w.varint(tonumber(server))
+	if not server then w.bits(0, 1); w.raw(guid); return nil end
+	w.bits(1, 1); w.varint(tonumber(server))
 	for k = 1, 8, 2 do w.byte(tonumber(hex:sub(k, k + 1), 16)) end
 	return tonumber(server)
 end
 
 local function ReadGuid(r)
-	if r.byte() == GUID_RAW then return r.raw(), nil end
+	if r.bits(1) == 0 then return r.raw(), nil end
 	local server = r.varint()
 	local hex = string.format("%02X%02X%02X%02X", r.byte(), r.byte(), r.byte(), r.byte())
 	return "Player-" .. server .. "-" .. hex, server
@@ -258,8 +311,9 @@ end
 local function Set(...) local s = {}; for i = 1, select("#", ...) do s[select(i, ...)] = true end; return s end
 
 local CLASS_IDS, CLASS_BY_ID = ns.CLASS_IDS, ns.CLASS_BY_ID
-local function WriteClass(w, class) w.byte(CLASS_IDS[class] or 0) end
-local function ReadClass(r) return CLASS_BY_ID[r.byte()] end
+-- 4 бита: classID 1–13, 0 — неизвестен
+local function WriteClass(w, class) w.bits(CLASS_IDS[class] or 0, 4) end
+local function ReadClass(r) return CLASS_BY_ID[r.bits(4)] end
 
 -- ---------------------------------------------------------------------------
 -- Кэш стычек
@@ -329,7 +383,7 @@ local function WriteMatch(w, db)
 		local s = db.scores[key]
 		if not OnlyKeys(s, SCORE_KEYS) or type(key) ~= "string" then error("не строка счёта") end
 		local keyIsGuid = (s.guid ~= nil and s.guid == key)
-		w.byte((s.guid and 1 or 0) + (keyIsGuid and 2 or 0) + (s.stats and 4 or 0))
+		w.bits((s.guid and 1 or 0) + (keyIsGuid and 2 or 0) + (s.stats and 4 or 0), 3)
 		if not keyIsGuid then w.raw(key) end
 		local server = s.guid and WriteGuid(w, s.guid)
 		WriteNameRealm(w, s.name or "?", server)
@@ -353,7 +407,7 @@ local function ReadMatch(r)
 	local mt = r.raw(); if mt ~= "" then db.matchType = mt end
 	local winner = r.varint(); if winner > 0 then db.winner = winner - 1 end
 	for _ = 1, r.varint() do
-		local flags = r.byte()
+		local flags = r.bits(3)
 		local key = (flags % 4 < 2) and r.raw() or nil
 		local s = {}
 		local server

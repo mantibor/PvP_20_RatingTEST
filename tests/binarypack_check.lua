@@ -86,6 +86,18 @@ assert(m:sub(1, 2) == "~M")
 same(match, ns.DecodeEntry(m), "матч")
 print("матч ok: " .. #m .. " байт; прежний вид " .. #(ns.EncodeEntry(match) or ""))
 
+-- ники: туда-обратно точь-в-точь, в том числе «не по правилам»
+local nicks = { "Кронов", "Ёжик", "Объект", "Lûcïa", "Øystein", "Ælfric", "Straße", "Bob", "B", "",
+	"КРОНОВ", "кронов", "КрОнов", "Łukasz", "Ǽsir", "Оченьоченьдлинныйник", "Mixлатиница" }
+-- третий аргумент — файл ников по одному в строке (из армори): все туда-обратно и средний размер
+if arg[3] then for line in io.lines(arg[3]) do nicks[#nicks + 1] = line end end
+for _, nick in ipairs(nicks) do
+	local blob = ns.EncodeBinary("~W", { [nick] = now })
+	local back = next(ns.DecodeEntry(blob))
+	assert(back == nick, "ник «" .. nick .. "» вернулся как «" .. tostring(back) .. "»")
+end
+print("ники ok: " .. #nicks .. " штук")
+
 -- настоящие сохранения
 local sv = arg[2]
 if sv then
