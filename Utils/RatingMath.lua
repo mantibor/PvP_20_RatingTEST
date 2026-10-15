@@ -132,8 +132,10 @@ function ns.UpdateGlicko2Rating(guid, opponentRating, opponentRD, scoreOrWon, mo
     rec.rating = newRating
     rec.rd = newRD
     rec.matches = (rec.matches or 0) + 1
-    rec.lastUpdate = time()
-    
+    -- lastUpdate не ставим: его ставит SaveSharedData следом. Поставленный
+    -- здесь, он равнялся её recency, и она выходила, не записав сыгранные,
+    -- победы, имя и класс.
+
     if rec.rating > (rec.bestRating or 0) then
         rec.bestRating = rec.rating
     end
