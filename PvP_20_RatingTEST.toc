@@ -26,11 +26,9 @@ Utils\Player.lua
 Utils\Time.lua
 Utils\Compression.lua
 Utils\RealmPack.lua
-Utils\BinaryPack.lua
 Utils\RatingMath.lua
 
 Core\Database.lua
-Core\Migration.lua
 Core\Rating.lua
 Core\Match.lua
 Core\Comm.lua
