@@ -7,7 +7,7 @@ local addonName, ns = ...
 -- защищённых функций; переживает /reload (PvP20RDevLog).
 -- ============================================================================
 local MAX_LOG = 400
-local QUEUE_TOKENS = { Q = true, G = true, H = true, WG = true }
+local QUEUE_TOKENS = { Q = true, G = true, H = true, WG = true, N = true } -- N — пакеты списков ников (NamePack.lua)
 
 local frame, textBox, refreshQueued
 

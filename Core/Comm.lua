@@ -107,13 +107,24 @@ local KEY_UNPACK = { SS = "SOLO_SHUFFLE", ["5V5"] = "ARENA_5V5" }
 local function MapFields(text, map)
     return (text:gsub("[^,]+", map))
 end
--- Заодно серверы в именах — номерами (Utils/RealmPack.lua).
+-- Заодно серверы в именах — номерами (Utils/RealmPack.lua). Списки ников
+-- (H_LIST, H_LIST_RESP, WG_SETUP) — пакетом «N_…» (Utils/NamePack.lua), если он
+-- короче и разжимается точь-в-точь. Пакеты «N_…» дальше не трогаем.
 function ns.PackQueueKeys(text)
-    if not ns.IsQueuePayload(text) then return text end
-    return ns.PackNamesInText(MapFields(text, KEY_PACK))
+    if not ns.IsQueuePayload(text) or text:sub(1, 2) == "N_" then return text end
+    text = MapFields(text, KEY_PACK)
+    local packed = ns.PackNamesInText(text)
+    local bin = ns.PackNameMessage(text)
+    if bin and #bin < #packed and ns.UnpackNameMessage(bin) == text then return bin end
+    return packed
 end
 function ns.UnpackQueueKeys(text)
     if not ns.IsQueuePayload(text) then return text end
+    if text:sub(1, 2) == "N_" then
+        -- вайтлист «N_W» и битые пакеты очереди не касаются
+        text = ns.UnpackNameMessage(text)
+        if not text then return "" end
+    end
     return ns.UnpackNamesInText(MapFields(text, KEY_UNPACK))
 end
 
@@ -188,9 +199,16 @@ local function GetRandomCacheBatch()
         snapshot[guid] = { n = rec.name, r = rec.rating, b = rec.bestRating or rec.rating, p = rec.played or 0, w = rec.won or 0, c = rec.class, u = rec.lastUpdate or now }
         SessionSentGUIDs[guid] = true
     end
-    return ns.EncodeForSend({ v = ns.PROTOCOL_VERSION, s = snapshot })
+    return ns.EncodeSnapshot(snapshot)
 end
 ns.GetRandomCacheBatch = GetRandomCacheBatch
+
+-- Снимок в пакет: короткий вид (Utils/Compact.lua), время — разница с
+-- GetServerTimeRounded(), «b» — номер минуты отправителя (ns.ResolveTimeBase).
+function ns.EncodeSnapshot(snapshot)
+    local base, mark = ns.TimeBase()
+    return ns.EncodeForSend({ v = ns.PROTOCOL_VERSION, b = mark, s = ns.CompactSnapshot(snapshot, base) })
+end
 
 function ns.BuildFullCacheSnapshot()
     ns.ScanGroupForBlacklist()
@@ -236,10 +254,11 @@ function ns.SendHandshake(channel, target)
     local matchLastTs = matchCount > 0 and timestamps[matchCount] or nil
     local pdCount, pdLatest = GetWhitelistStats()
     if matchCount == 0 and pdCount == 0 then return end
-    local payload = ns.EncodeForSend({ 
-        v = ns.PROTOCOL_VERSION, 
-        mth = matchCount > 0 and { c = matchCount, l = matchLastTs } or nil,
-        pdh = pdCount > 0 and { c = pdCount, l = pdLatest } or nil
+    local base, mark = ns.TimeBase()
+    local payload = ns.EncodeForSend({
+        v = ns.PROTOCOL_VERSION, b = mark,
+        mth = matchCount > 0 and { c = matchCount, l = base - matchLastTs } or nil,
+        pdh = pdCount > 0 and { c = pdCount, l = base - pdLatest } or nil
     })
     if payload then ns.SendAddonMessage(channel, target, payload, "BULK") end
 end
@@ -250,10 +269,11 @@ function ns.BroadcastHandshake()
     local matchLastTs = matchCount > 0 and timestamps[matchCount] or nil
     local pdCount, pdLatest = GetWhitelistStats()
     if matchCount == 0 and pdCount == 0 then return end
-    local payload = ns.EncodeForSend({ 
-        v = ns.PROTOCOL_VERSION, 
-        mth = matchCount > 0 and { c = matchCount, l = matchLastTs } or nil,
-        pdh = pdCount > 0 and { c = pdCount, l = pdLatest } or nil
+    local base, mark = ns.TimeBase()
+    local payload = ns.EncodeForSend({
+        v = ns.PROTOCOL_VERSION, b = mark,
+        mth = matchCount > 0 and { c = matchCount, l = base - matchLastTs } or nil,
+        pdh = pdCount > 0 and { c = pdCount, l = base - pdLatest } or nil
     })
     if payload then ns.SendInstance(payload) end
 end
@@ -261,16 +281,35 @@ end
 -- ============================================================================
 -- RECEIVING AND MERGING
 -- ============================================================================
+-- Вайтлист от другого игрока: берём более свежие отметки, старше месяца — нет.
+local function MergeWhitelist(list)
+    if type(list) ~= "table" then return end
+    local localPD, now = ns.GetWhitelistDB(), GetServerTime()
+    for name, ts in pairs(list) do
+        if type(name) == "string" and type(ts) == "number" and now - ts <= ns.MAX_CACHE_AGE
+        and not ns.IsBlacklisted(name) then
+            if not localPD[name] or ts > localPD[name] then localPD[name] = ts end
+        end
+    end
+end
+
 local function OnCommReceived(prefix, payload, sender, distribution)
-    if prefix ~= ns.PREFIX or ns.IsBlacklisted(sender) or not payload or #payload < 5 then return end
+    if prefix ~= ns.PREFIX or ns.IsBlacklisted(sender) or not payload then return end
     local myName = ns.FormatNameRealm(UnitName("player"))
     local normalizedSender = ns.FormatNameRealm(sender)
+    -- любое сообщение аддона обновляет отметку отправителя в вайтлисте
     if normalizedSender and normalizedSender ~= myName then ns.AddPlayer(normalizedSender) end
+    if #payload < 5 then return end
 
-    -- Сообщения очереди длиннее 255 байт (WG_SETUP из шести кириллических
-    -- имён — 311) AceComm режет на куски, а очередь слушает сырой CHAT_MSG_ADDON
-    -- и кусков не узнаёт. Собранное целиком отдаём ей отсюда. Короткие она
-    -- уже получила сама, их не дублируем.
+    -- 0. Вайтлист пакетом «N_W» (Utils/NamePack.lua)
+    if payload:sub(1, 3) == "N_W" then
+        MergeWhitelist(ns.UnpackWhitelist(payload))
+        return
+    end
+
+    -- Сообщения очереди длиннее 255 байт AceComm режет на куски, а очередь
+    -- слушает сырой CHAT_MSG_ADDON и кусков не узнаёт. Собранное целиком
+    -- отдаём ей отсюда. Короткие она уже получила сама, их не дублируем.
     if #payload > 255 and ns.IsQueuePayload(payload) then
         payload = ns.UnpackQueueKeys(payload)
         if ns.QLog then ns.QLog("<< " .. tostring(sender) .. " [" .. tostring(distribution) .. ", из частей]: " .. payload) end
@@ -282,11 +321,13 @@ local function OnCommReceived(prefix, payload, sender, distribution)
 
     local data = ns.DecodePayload(payload)
     if not data or data.v ~= ns.PROTOCOL_VERSION then return end
-    
+    -- время в пакете — разница с GetServerTimeRounded() отправителя
+    local base = ns.ResolveTimeBase(data.b)
+
     -- 1. Запрос кэша игроков (REQ) — отвечаем батчем + хендшейком
     if data.req then
         local batch = GetRandomCacheBatch()
-        
+
         if distribution == "PARTY" or distribution == "RAID" or distribution == "INSTANCE_CHAT" then
             if batch then ns.SendGroup(batch) end
             ns.BroadcastHandshake()
@@ -296,97 +337,104 @@ local function OnCommReceived(prefix, payload, sender, distribution)
         end
         return
     end
-    
+
     -- 2. Получение кэша игроков (Snapshot)
     if type(data.s) == "table" then
-        ns.MergeSnapshot(data.s)
+        ns.MergeSnapshot(ns.ExpandSnapshot(data.s, base))
         return
     end
-    
+
     -- 3. Хендшейк матчей (mth)
     if type(data.mth) == "table" then
         local remoteCount = data.mth.c
-        local remoteLastTs = data.mth.l
+        local remoteLastTs = base - (tonumber(data.mth.l) or 0)
         local myTs = GetAllMatchTimestamps()
         local myCount = #myTs
         local myLastTs = myTs[#myTs] or 0
-        
+
         if myCount < remoteCount or myLastTs < remoteLastTs then
             local reqPayload = ns.EncodeForSend({ v = ns.PROTOCOL_VERSION, mtr = true })
             if reqPayload then ns.SendWhisper(reqPayload, normalizedSender) end
         end
     end
-    
+
     -- 4. Хендшейк whitelist (pdh)
     if type(data.pdh) == "table" then
         local remoteCount = data.pdh.c
-        local remoteLastTs = data.pdh.l
+        local remoteLastTs = base - (tonumber(data.pdh.l) or 0)
         local myCount, myLastTs = GetWhitelistStats()
-        
+
         if myCount < remoteCount or myLastTs < remoteLastTs then
             local reqPayload = ns.EncodeForSend({ v = ns.PROTOCOL_VERSION, pdr = true })
             if reqPayload then ns.SendWhisper(reqPayload, normalizedSender) end
         end
     end
-    
+
     if data.mth or data.pdh then return end
-    
+
     -- 5. Запрос списка timestamp'ов матчей (mtr)
     if data.mtr then
         local timestamps = GetAllMatchTimestamps()
         if #timestamps > 0 then
-            local payload = ns.EncodeForSend({ v = ns.PROTOCOL_VERSION, mt = timestamps })
+            local myBase, mark = ns.TimeBase()
+            local diffs = {}
+            for i, ts in ipairs(timestamps) do diffs[i] = myBase - ts end
+            local payload = ns.EncodeForSend({ v = ns.PROTOCOL_VERSION, b = mark, mt = diffs })
             if payload then ns.SendWhisper(payload, normalizedSender) end
         end
         return
     end
-    
+
     -- 6. Получение списка timestamp'ов (mt)
     if type(data.mt) == "table" then
         local matchDB = ns.GetMatchDB()
         if matchDB then
+            local myBase, mark = ns.TimeBase()
             local missing = {}
-            for _, ts in ipairs(data.mt) do
-                if not matchDB[ts] then missing[#missing + 1] = ts end
+            for _, d in ipairs(data.mt) do
+                local ts = base - d
+                if not matchDB[ts] then missing[#missing + 1] = myBase - ts end
             end
             if #missing > 0 then
-                local req = ns.EncodeForSend({ v = ns.PROTOCOL_VERSION, mr = missing })
+                local req = ns.EncodeForSend({ v = ns.PROTOCOL_VERSION, b = mark, mr = missing })
                 if req then ns.SendWhisper(req, normalizedSender) end
             end
         end
         return
     end
-    
+
     -- 7. Запрос тел матчей (mr)
     if type(data.mr) == "table" then
         local matchDB = ns.GetMatchDB()
         if matchDB then
+            local myBase, mark = ns.TimeBase()
             local matches = {}
-            for _, ts in ipairs(data.mr) do
+            for _, d in ipairs(data.mr) do
+                local ts = base - d
                 local raw = matchDB[ts]
                 if raw then
                     if type(raw) == "string" then
-                        matches[tostring(ts)] = raw
+                        matches[tostring(myBase - ts)] = raw
                     elseif type(raw) == "table" and ns.CanCompress() then
-                        matches[tostring(ts)] = ns.EncodeEntry(raw)
+                        matches[tostring(myBase - ts)] = ns.EncodeMatch(raw)
                     end
                 end
             end
             if next(matches) then
-                local resp = ns.EncodeForSend({ v = ns.PROTOCOL_VERSION, md = matches })
+                local resp = ns.EncodeForSend({ v = ns.PROTOCOL_VERSION, b = mark, md = matches })
                 if resp then ns.SendWhisper(resp, normalizedSender) end
             end
         end
         return
     end
-    
+
     -- 8. Получение тел матчей (md)
     if type(data.md) == "table" then
         local matchDB = ns.GetMatchDB()
         if matchDB then
             local added = 0
-            for tsStr, d in pairs(data.md) do
-                local ts = tonumber(tsStr)
+            for dStr, d in pairs(data.md) do
+                local ts = tonumber(dStr) and base - tonumber(dStr)
                 if ts and not matchDB[ts] then
                     matchDB[ts] = d
                     added = added + 1
@@ -396,25 +444,20 @@ local function OnCommReceived(prefix, payload, sender, distribution)
         end
         return
     end
-    
-    -- 9. Запрос whitelist (pdr)
+
+    -- 9. Запрос whitelist (pdr) — ответ пакетом «N_W»
     if data.pdr then
         local pd = ns.GetWhitelistDB()
         if next(pd) then
-            local payload = ns.EncodeForSend({ v = ns.PROTOCOL_VERSION, pd = pd })
+            local payload = ns.PackWhitelist(pd)
             if payload then ns.SendWhisper(payload, normalizedSender) end
         end
         return
     end
-    
-    -- 10. Получение whitelist (pd)
+
+    -- 10. Получение whitelist прежним видом (pd)
     if type(data.pd) == "table" then
-        local localPD = ns.GetWhitelistDB()
-        for name, ts in pairs(data.pd) do
-            if type(name) == "string" and type(ts) == "number" then
-                if not localPD[name] or ts > localPD[name] then localPD[name] = ts end
-            end
-        end
+        MergeWhitelist(data.pd)
         return
     end
 end
@@ -483,7 +526,7 @@ local function HandlePlayerLogin()
         if not ns.CanSendAddonMessage() then return end
         local fullSnapshot = ns.BuildFullCacheSnapshot()
         if fullSnapshot and next(fullSnapshot) then
-            local payload = ns.EncodeForSend({ v = ns.PROTOCOL_VERSION, s = fullSnapshot })
+            local payload = ns.EncodeSnapshot(fullSnapshot)
             if payload then ns.SendGuild(payload) end
         end
         ns.SendHandshake("GUILD", nil)

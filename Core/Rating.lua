@@ -14,7 +14,7 @@ function ns.InitArchiveKeys()
             if isBlob or (isTable and type(rawget(data, "blob")) == "string") then
                 kept[#kept + 1] = ts
             elseif isTable and rawget(data, "matchType") and type(rawget(data, "scores")) == "table" and ns.CanCompress() then
-                local blob = ns.EncodeEntry(data)
+                local blob = ns.EncodeMatch(data)
                 if blob then 
                     matchDB[ts] = blob
                     kept[#kept + 1] = ts
@@ -43,9 +43,9 @@ function ns.GetArchivedMatch(ts)
     local raw = matchDB[ts]
     local decoded = {}
     if type(raw) == "string" then
-        decoded = ns.DecodeEntry(raw)
+        decoded = ns.DecodeMatch(raw)
     elseif type(raw) == "table" then
-        decoded = type(rawget(raw, "blob")) == "string" and ns.DecodeEntry(rawget(raw, "blob")) or raw
+        decoded = type(rawget(raw, "blob")) == "string" and ns.DecodeMatch(rawget(raw, "blob")) or raw
     end
     if type(decoded) ~= "table" then decoded = {} end
     ns.ArchiveCache[ts] = decoded

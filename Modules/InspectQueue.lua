@@ -162,7 +162,7 @@ local function FinishPostArena()
 	end
 	
 	if next(enemyPayloadRecords) then
-		local enemyPayload = ns.EncodeForSend({ v = ns.PROTOCOL_VERSION, s = enemyPayloadRecords })
+		local enemyPayload = ns.EncodeSnapshot(enemyPayloadRecords)
 		if enemyPayload then
 			for _, name in ipairs(enemyNames) do
 				ns.SendWhisper(enemyPayload, name)
@@ -171,7 +171,7 @@ local function FinishPostArena()
 	end
 	
 	if myRecord and allyGuids and allyNames then
-		local allyPayload = ns.EncodeForSend({ v = ns.PROTOCOL_VERSION, s = { [myGuid] = myRecord } })
+		local allyPayload = ns.EncodeSnapshot({ [myGuid] = myRecord })
 		if allyPayload then
 			for guid in pairs(allyGuids) do
 				if guid ~= myGuid then

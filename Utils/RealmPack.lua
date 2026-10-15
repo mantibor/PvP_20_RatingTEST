@@ -29,6 +29,10 @@ local function Build()
 	end
 end
 
+-- Номер сервера и обратно (Compact.lua, NamePack.lua)
+function ns.RealmIdOf(realm) if not toId then Build() end return toId[realm] end
+function ns.RealmNameOf(id) if not toName then Build() end return toName[id] end
+
 -- Только «Имя-Сервер» с одним дефисом: GUID и составные строки не трогаем.
 function ns.PackName(s)
 	if type(s) ~= "string" then return s end
