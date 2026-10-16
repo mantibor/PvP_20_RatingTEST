@@ -30,6 +30,9 @@ end
 -- ============================================================================
 -- GENERIC DB COMPRESSION / DECOMPRESSION
 -- ============================================================================
+-- эти ключи хранятся в коротком виде (Utils/Compact.lua): { сжать, развернуть }
+local COMPACT = { SkirmishData = { ns.CompactSkirmish, ns.ExpandSkirmish } }
+
 function ns.CompressDB(regionKey, sourceTable, filterFn)
     if not ns.CanCompress() or type(sourceTable) ~= "table" then return end
     local regionDB = ns.GetRegionDB()
@@ -44,6 +47,7 @@ function ns.CompressDB(regionKey, sourceTable, filterFn)
         regionDB[regionKey] = nil
         return
     end
+    if COMPACT[regionKey] then data = COMPACT[regionKey][1](data) end
     local blob = ns.EncodeEntry(data)
     if blob then regionDB[regionKey] = blob end
 end
@@ -54,6 +58,7 @@ function ns.DecompressDB(regionKey, targetTable, filterFn)
     local data
     if type(raw) == "string" then
         data = ns.DecodeEntry(raw)
+        if COMPACT[regionKey] and type(data) == "table" then data = COMPACT[regionKey][2](data) end
     elseif type(raw) == "table" then
         data = raw
     end
@@ -123,7 +128,8 @@ end
 
 function ns.AddPlayer(nameRealm)
     if not nameRealm or nameRealm == "" or ns.IsBlacklisted(nameRealm) then return end
-    ns.GetWhitelistDB()[nameRealm] = time()
+    -- время сервера: оно одно у всех, а вайтлист пересылается между игроками
+    ns.GetWhitelistDB()[nameRealm] = GetServerTime()
 end
 
 -- ============================================================================
@@ -285,6 +291,11 @@ function ns.Cleanup()
             end
         end
     end
+    -- вайтлист: кого не слышали месяц (ns.MAX_CACHE_AGE) — убираем
+    local wl, now = ns.GetWhitelistDB(), GetServerTime()
+    for name, ts in pairs(wl) do
+        if type(ts) ~= "number" or now - ts > ns.MAX_CACHE_AGE then wl[name] = nil end
+    end
 end
 
 -- ============================================================================
@@ -300,6 +311,10 @@ f:SetScript("OnEvent", function(self, event, arg1)
         
         Migrate(regionDB, matchDB)
         
+        -- шаги перевода сохранений — Migration.lua; до InitArchiveKeys, чтобы
+        -- убранные миграцией матчи не попали в список ключей
+        ns.RunMigrations(regionDB, matchDB)
+
         if ns.InitArchiveKeys then
             ns.InitArchiveKeys()
         end

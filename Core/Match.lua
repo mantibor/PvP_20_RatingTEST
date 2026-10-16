@@ -328,7 +328,7 @@ function ns.HandleMatchComplete()
 	if ns.UpdateQueueButtonsStats then ns.UpdateQueueButtonsStats() end
 	
 	C_Timer.After(1, function()
-		local blob = ns.EncodeEntry(db)
+		local blob = ns.EncodeMatch(db)
 		if blob then ns.ArchiveCache[ts] = db; matchDB[ts] = blob end
 	end)
 end

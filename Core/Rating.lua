@@ -14,7 +14,7 @@ function ns.InitArchiveKeys()
             if isBlob or (isTable and type(rawget(data, "blob")) == "string") then
                 kept[#kept + 1] = ts
             elseif isTable and rawget(data, "matchType") and type(rawget(data, "scores")) == "table" and ns.CanCompress() then
-                local blob = ns.EncodeEntry(data)
+                local blob = ns.EncodeMatch(data)
                 if blob then 
                     matchDB[ts] = blob
                     kept[#kept + 1] = ts
@@ -43,9 +43,9 @@ function ns.GetArchivedMatch(ts)
     local raw = matchDB[ts]
     local decoded = {}
     if type(raw) == "string" then
-        decoded = ns.DecodeEntry(raw)
+        decoded = ns.DecodeMatch(raw)
     elseif type(raw) == "table" then
-        decoded = type(rawget(raw, "blob")) == "string" and ns.DecodeEntry(rawget(raw, "blob")) or raw
+        decoded = type(rawget(raw, "blob")) == "string" and ns.DecodeMatch(rawget(raw, "blob")) or raw
     end
     if type(decoded) ~= "table" then decoded = {} end
     ns.ArchiveCache[ts] = decoded
@@ -88,6 +88,7 @@ local function SimulateRatings(matchType, weekStart)
     
     local ratings, rd, volatility = {}, {}, {}
     local wins, losses, bestR = {}, {}, {}
+    local lastChange = {} -- изменение рейтинга в последнем матче игрока (для таблицы счёта)
     local weeklyWins, weeklyLosses, weeklyBestR = {}, {}, {}
     
     for _, ts in ipairs(ns.ArchiveSortedKeys) do
@@ -120,8 +121,10 @@ local function SimulateRatings(matchType, weekStart)
                     for _, g in ipairs(guids) do
                         -- 🌟 ПЕРЕДАЕМ simDB КАК ПОСЛЕДНИЙ АРГУМЕНТ
                         local modeKey = matchType == "random_bg" and "RANDOM_BG" or "WARGAMES"
+                        local before = ratings[g] or 0
                         local newRating, newRD = ns.UpdateGlicko2Rating(g, enemyAvg, enemyAvgRD, isWin, modeKey, simDB)
-                        
+                        lastChange[g] = newRating - before
+
                         ratings[g] = newRating
                         rd[g] = newRD
                         
@@ -144,8 +147,8 @@ local function SimulateRatings(matchType, weekStart)
         local ww, wl = weeklyWins[g] or 0, weeklyLosses[g] or 0
         result[g] = {
             rating = r, rd = rd[g], wins = w, losses = l, played = w + l, 
-            bestRating = bestR[g] or 0,
-            weeklyWins = ww, weeklyLosses = wl, weeklyPlayed = ww + wl, 
+            bestRating = bestR[g] or 0, lastChange = lastChange[g] or 0,
+            weeklyWins = ww, weeklyLosses = wl, weeklyPlayed = ww + wl,
             weeklyBestRating = weeklyBestR[g] or 0,
         }
     end
@@ -192,6 +195,7 @@ function ns.GetArchiveStatsForGuid(guid)
         totals.randomBG.rd = rbSim.rd
         totals.randomBG.bestRating = rbSim.bestRating
         totals.randomBG.weeklyBestRating = rbSim.weeklyBestRating
+        totals.randomBG.lastChange = rbSim.lastChange
     end
     
     local wgSim = bgSimCache.wargame and bgSimCache.wargame[guid]
@@ -200,6 +204,7 @@ function ns.GetArchiveStatsForGuid(guid)
         totals.wargame.rd = wgSim.rd
         totals.wargame.bestRating = wgSim.bestRating
         totals.wargame.weeklyBestRating = wgSim.weeklyBestRating
+        totals.wargame.lastChange = wgSim.lastChange
     end
     
     -- 2. Skirmish: ПРИОРИТЕТ реальных данных Blizzard API из SkirmishDB

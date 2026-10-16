@@ -19,6 +19,7 @@
     local myQueueServerTime = 0
 
     local QueueRoster = {}
+    local lastRosterEcho = {}
 
     -- RoleCheck
     local roleCheckActive = false
@@ -143,7 +144,7 @@
             elseif heal then
                 flex[#flex + 1] = name
             else
-                other[#other + 1] = { name = name, tank = tank }
+                other[#other + 1] = { name = name, tank = tank, dps = dps }
             end
         end
         if subscribers < constraints.minSubscribersPerTeam then return nil end
@@ -160,8 +161,9 @@
                 assign[name] = (not dps and tank) and "TANK" or "DAMAGER"
             end
         end
+        -- танк+боец — боец, как и у гибких выше: танк только если больше ничего не отмечено
         for _, entry in ipairs(other) do
-            assign[entry.name] = entry.tank and "TANK" or "DAMAGER"
+            assign[entry.name] = (entry.tank and not entry.dps) and "TANK" or "DAMAGER"
         end
         return assign
     end
@@ -188,42 +190,115 @@
     -- ============================================================================
     -- SEND QUEUE MESSAGE
     -- ============================================================================
-    local function SendQueueMessage(payload, prio)
-        local guildMembers = {}
+    -- Гильдия слышит очередь без дружбы в Battle.net. Шёпот вайтлиста остаётся
+    -- для тех, кто в гильдии не состоит. Офлайн по кэшу не отсекаем (он врёт),
+    -- только по ответу сервера «не найден» — см. whisperOfflineUntil ниже.
+    local function IsGuildMember(nameRealm)
+        if not IsInGuild() or not nameRealm then return false end
+        for i = 1, GetNumGuildMembers() do
+            local name = GetGuildRosterInfo(i)
+            if name and ns.FormatNameRealm(name) == nameRealm then return true end
+        end
+        return false
+    end
 
-        ns.SendGuild(payload, prio)
+    -- Шёпот офлайн-человеку сервер возвращает строкой «Персонаж не найден»,
+    -- и так на каждое сообщение очереди: десятки строк в чате в минуту.
+    -- Кэшу не верим, верим ответу сервера: кто «не найден», тому 5 минут
+    -- не шепчем; любое его аддон-сообщение снимает отметку раньше.
+    local OFFLINE_TTL = 300
+    local whisperOfflineUntil = {}
+    local whisperedAt = {}
 
+    local function GuildNameSet()
+        local set = {}
+        if not IsInGuild() then return set end
+        for i = 1, GetNumGuildMembers() do
+            local name = GetGuildRosterInfo(i)
+            if name then set[ns.FormatNameRealm(name)] = true end
+        end
+        return set
+    end
+
+    -- Кто из вайтлиста в сети наверняка: онлайн в сообществах (ScheduleCommunityScan
+    -- уже отобрал по вайтлисту и уровню), друзья Battle.net и обычные друзья в WoW,
+    -- и те, от кого за 100 с пришло аддон-сообщение (heartbeat — раз в 90 с).
+    -- Шептать всему вайтлисту нельзя: офлайн-адресаты съедают очередь ChatThrottleLib,
+    -- а она отдаёт шёпот примерно раз в секунду — живые сообщения опаздывают.
+    local HEARD_TTL = 100
+    local lastHeard = {}
+
+    local function OnlineTargets(wl)
+        local online, now = {}, GetTime()
         if communityMembers then
-            for clubId, members in pairs(communityMembers) do
-                if type(members) == "table" then
-                    for _, m in ipairs(members) do
-                        if m and m.name and m.level and ns.IsLevel(m.level) then
-                            if m.memberId and CommunityOnline(clubId, m.memberId) then
-                                local nameRealm = ns.FormatNameRealm(m.name)
-                                if nameRealm and ns.IsInWhitelist(nameRealm) and not guildMembers[nameRealm] then
-                                    ns.SendWhisper(payload, nameRealm, prio)
-                                end
-                            end
-                        end
-                    end
-                end
+            for _, list in pairs(communityMembers) do
+                for _, m in ipairs(list) do online[m.name] = true end
             end
         end
-
-        for i = 1, BNGetNumFriends() do
-            local acc = C_BattleNet.GetFriendAccountInfo(i)
-            if acc and acc.gameAccountInfo then
-                local g = acc.gameAccountInfo
-                if g.isOnline and g.clientProgram == BNET_CLIENT_WOW then
-                    local lvl = g.characterLevel
-                    if lvl and ns.IsLevel(lvl) then
-                        local nameRealm = ns.FormatNameRealm(g.characterName, g.realmName)
-                        if nameRealm and ns.IsInWhitelist(nameRealm) and not guildMembers[nameRealm] then
-                            ns.SendWhisper(payload, nameRealm, prio)
-                        end
-                    end
-                end
+        for nameRealm, at in pairs(lastHeard) do
+            if now - at < HEARD_TTL then online[nameRealm] = true else lastHeard[nameRealm] = nil end
+        end
+        if C_FriendList and C_FriendList.GetNumFriends then
+            for i = 1, C_FriendList.GetNumFriends() do
+                local info = C_FriendList.GetFriendInfoByIndex(i)
+                if info and info.connected and info.name then online[ns.FormatNameRealm(info.name)] = true end
             end
+        end
+        for nameRealm in pairs(wl) do
+            if type(nameRealm) == "string" and not online[nameRealm] and BNetOnline(nameRealm) then
+                online[nameRealm] = true
+            end
+        end
+        return online
+    end
+
+    -- Всё сообщение очереди — ALERT: очередь ChatThrottleLib пропускает их вперёд
+    -- остального трафика аддона (кэш стычек и прочее — BULK).
+    local function SendQueueMessage(payload)
+        local inGuild = {}
+        if IsInGuild() then
+            ns.SendGuild(payload, "ALERT")
+            inGuild = GuildNameSet()
+        end
+        local wl = ns.GetWhitelistDB()
+        if type(wl) ~= "table" then return end
+        local me = ns.FormatNameRealm(UnitName("player"))
+        local now = GetTime()
+        local online = OnlineTargets(wl)
+        for nameRealm in pairs(wl) do
+            if type(nameRealm) == "string" and online[nameRealm] and nameRealm ~= me
+            and not ns.IsBlacklisted(nameRealm) and not inGuild[nameRealm]
+            and (whisperOfflineUntil[nameRealm] or 0) < now then
+                whisperedAt[nameRealm] = now
+                ns.SendWhisper(payload, nameRealm, "ALERT")
+            end
+        end
+    end
+
+    do
+        local fmt = ERR_CHAT_PLAYER_NOT_FOUND_S
+        local pattern = fmt and ("^" .. fmt:gsub("[%(%)%.%+%-%*%?%[%]%^%$]", "%%%0"):gsub("%%s", "(.+)") .. "$")
+        local addFilter = (ChatFrameUtil and ChatFrameUtil.AddMessageEventFilter) or ChatFrame_AddMessageEventFilter
+        if pattern and addFilter then
+            addFilter("CHAT_MSG_SYSTEM", function(_, _, msg)
+                if type(msg) ~= "string" or (issecretvalue and issecretvalue(msg)) then return false end
+                local name = msg:match(pattern)
+                local nameRealm = name and ns.FormatNameRealm(name)
+                local sentAt = nameRealm and whisperedAt[nameRealm]
+                if sentAt and GetTime() - sentAt < 10 then
+                    whisperOfflineUntil[nameRealm] = GetTime() + OFFLINE_TTL
+                    return true
+                end
+                return false
+            end)
+        end
+    end
+
+    local function MarkHeard(sender)
+        local nameRealm = ns.FormatNameRealm(sender)
+        if nameRealm then
+            whisperOfflineUntil[nameRealm] = nil
+            lastHeard[nameRealm] = GetTime()
         end
     end
 
@@ -312,11 +387,15 @@
         }
     end
 
-    local function SerializeInfo(info)
+    local function SerializeInfo(info, echo)
         local parts = { "Q_STAT", info.queue, tostring(info.time) }
         if info.roles then parts[#parts + 1] = "R:" .. info.roles end
         if info.subscribed then parts[#parts + 1] = "S:1" end
         if info.appearOffline then parts[#parts + 1] = "A:1" end
+        if echo then parts[#parts + 1] = "E:1" end
+        -- Метка сборки: в /dev видно, у кого старые файлы. Старые клиенты
+        -- незнакомую часть просто пропускают.
+        parts[#parts + 1] = "V:" .. ns.QUEUE_BUILD
         local q = GetQueue(info.queue)
         if q and q.members and #q.members > 1 then
             local encoded = {}
@@ -428,11 +507,10 @@
         end
         if #validNames == 0 then return end
 
+        -- Опрос — шёпотом каждому из ростера, а не всем (решение автора).
         local message = "H_LIST," .. queueKey .. "," .. table.concat(validNames, ";")
         for nameRealm in pairs(bucket) do
-            if nameRealm ~= hostNameRealm then
-                ns.SendWhisper(message, nameRealm, "ALERT")
-            end
+            if nameRealm ~= hostNameRealm then ns.SendWhisper(message, nameRealm, "ALERT") end
         end
     end
 
@@ -472,12 +550,21 @@
         local required = GetRosterSize(queueKey)
         if count >= required and hostName then
             local myName = ns.FormatNameRealm(UnitName("player"))
-            if hostName == myName and not hostNotified[queueKey] then
-                hostNotified[queueKey] = true
-                print("|cff00ff00[PvP20R Queue]|r Вы выбраны Хостом группы! (" .. required .. " игроков)")
-                hostFindResults[queueKey] = {}
-                CollectHostOwnFriends(queueKey, myName)
-                SendHostList(queueKey, myName)
+            if hostName == myName then
+                if not hostNotified[queueKey] then
+                    hostNotified[queueKey] = true
+                    print("|cff00ff00[PvP20R Queue]|r Вы выбраны Хостом группы! (" .. count .. " в очереди, нужно " .. required .. ")")
+                    hostFindResults[queueKey] = {}
+                    CollectHostOwnFriends(queueKey, myName)
+                    SendHostList(queueKey, myName)
+                    C_Timer.After(8, function()
+                        if hostNotified[queueKey] and ns.WargameFlow and ns.WargameFlow.HostDistributeWargames then
+                            ns.WargameFlow.HostDistributeWargames(queueKey)
+                        end
+                    end)
+                elseif ns.WargameFlow and ns.WargameFlow.HostDistributeWargames then
+                    ns.WargameFlow.HostDistributeWargames(queueKey)
+                end
             end
         else
             hostNotified[queueKey] = nil
@@ -553,7 +640,7 @@
         end
         RefreshSelf(queueKey)
         local payload = SerializeInfo(GetMyInfo(queueKey))
-        SendQueueMessage(payload, "ALERT")
+        SendQueueMessage(payload)
         local q = GetQueue(queueKey)
         if q and q.grouped then ns.SendGroup(payload, "ALERT") end
     end
@@ -563,7 +650,7 @@
         local parts = { "Q_LEAVE" }
         for _, key in ipairs(leavingKeys) do parts[#parts + 1] = key end
         local payload = table.concat(parts, ",")
-        SendQueueMessage(payload, "ALERT")
+        SendQueueMessage(payload)
         if IsInGroup(1) and (GetNumGroupMembers(1) or 0) > 1 then
             ns.SendGroup(payload, "ALERT")
         end
@@ -857,6 +944,9 @@
         return true
     end
 
+    -- Только выход из очереди. Состояние варгейма (состав, сбор групп) не трогает:
+    -- его сбрасывают те, кому это нужно (ResetWargame ниже). Раньше был флаг
+    -- keepWargame ради единственного вызова — выхода из очереди после «Войти».
     local function LeaveQueueByKey(key)
         if IsInGroup(1) and (GetNumGroupMembers(1) or 0) > 1
         and not UnitIsGroupLeader("player", 1) and key == "ARENA_5V5" then
@@ -916,8 +1006,6 @@
             end
         end
 
-        if ns.WargameFlow then ns.WargameFlow.ResetWargameState() end
-
         if wasActive then
             PlaySoundThrottled(SOUNDKIT.LFG_DENIED)
             UIErrorsFrame:AddMessage(ERR_LFG_LEFT_QUEUE, YELLOW_FONT_COLOR:GetRGB())
@@ -926,6 +1014,10 @@
         end
 
         return true
+    end
+
+    local function ResetWargame()
+        if ns.WargameFlow then ns.WargameFlow.ResetWargameState() end
     end
 
     local function LeaveGrouped()
@@ -942,7 +1034,10 @@
             roleCheckExpectedPlayers = {}
         end
         local q = GetQueue("ARENA_5V5")
-        if q and q.startTime then LeaveQueueByKey("ARENA_5V5") end
+        if q and q.startTime then
+            LeaveQueueByKey("ARENA_5V5")
+            ResetWargame()
+        end
     end
 
     local function OnGroupRosterUpdate()
@@ -1185,6 +1280,7 @@
 
         local report = string.format("H_LIST_RESP,%s,%s,%d,%s",
             queueKey, myName, #found, table.concat(found, ";"))
+        -- Ответ нужен только хосту — шёпотом ему, а не всем (просьба автора).
         ns.SendWhisper(report, senderNameRealm, "ALERT")
     end
 
@@ -1225,6 +1321,9 @@
                 if hostFindResults[queueKey][nameRealm] then received = received + 1 end
             end
 
+            if ns.QLog and hostNotified[queueKey] then
+                ns.QLog(("хост: ответили на опрос %d/%d"):format(received, expected))
+            end
             if received >= expected and expected > 0 then
                 local myName = ns.FormatNameRealm(UnitName("player"))
                 local hostName, minTime = nil, math.huge
@@ -1251,20 +1350,23 @@
     local function OnQueueStatus(sender, rawMessage)
         local senderNameRealm = ns.FormatNameRealm(sender)
         if not senderNameRealm then return end
+        if not ns.IsInWhitelist(senderNameRealm) and not IsGuildMember(senderNameRealm) then return end
         local parts = {}
         for part in rawMessage:gmatch("([^,]+)") do parts[#parts + 1] = part end
 
-        if #parts >= 3 and parts[1] == "QSTAT" then
+        if #parts >= 3 and parts[1] == "Q_STAT" then
             local queueKey = parts[2]
             local qTime = tonumber(parts[3])
             if not qTime or not GetQueue(queueKey) then return end
-            local roles, subscribed, appearOffline
+            local roles, subscribed, appearOffline, echo, build
             local members
             for i = 4, #parts do
                 local part = parts[i]
                 if part:sub(1, 2) == "R:" then roles = part:sub(3)
                 elseif part == "S:1" then subscribed = true
                 elseif part == "A:1" then appearOffline = true
+                elseif part == "E:1" then echo = true
+                elseif part:sub(1, 2) == "V:" then build = part:sub(3)
                 elseif part:sub(1, 2) == "M:" then
                     members = {}
                     for token in part:sub(3):gmatch("[^~]+") do
@@ -1290,11 +1392,24 @@
                 bucket[senderNameRealm] = {
                     time = qTime, queue = queueKey, recvTime = GetTime(),
                     roles = roles, subscribed = subscribed, appearOffline = appearOffline,
+                    build = build,
                 }
             end
             ElectHost(queueKey)
+            RefreshFrames()
 
             local myName = ns.FormatNameRealm(UnitName("player"))
+            local q = GetQueue(queueKey)
+            if not echo and q and q.startTime and myName ~= senderNameRealm then
+                local stampKey = queueKey .. "\0" .. senderNameRealm
+                local now = GetTime()
+                if not lastRosterEcho[stampKey] or now - lastRosterEcho[stampKey] > 20 then
+                    lastRosterEcho[stampKey] = now
+                    -- Эхо — только новичку: остальные в очереди уже знают нас по heartbeat.
+                    -- Раньше уходило всем (гильдия + шёпот по списку) от каждого стоящего.
+                    ns.SendWhisper(SerializeInfo(GetMyInfo(queueKey), true), senderNameRealm, "ALERT")
+                end
+            end
             if myName ~= senderNameRealm and members then
                 for _, member in ipairs(members) do
                     if member.name == myName then
@@ -1311,7 +1426,7 @@
         if not senderNameRealm then return end
         local parts = {}
         for part in rawMessage:gmatch("([^,]+)") do parts[#parts + 1] = part end
-        if #parts < 2 or parts[1] ~= "QLEAVE" then return end
+        if #parts < 2 or parts[1] ~= "Q_LEAVE" then return end
 
         local myName = ns.FormatNameRealm(UnitName("player"))
         for i = 2, #parts do
@@ -1333,6 +1448,7 @@
                 else
                     ElectHost(queueKey)
                 end
+                RefreshFrames()
             end
         end
     end
@@ -1343,7 +1459,7 @@
         
         local parts = {}
         for part in rawMessage:gmatch("([^,]+)") do parts[#parts + 1] = part end
-        if #parts < 2 or parts[1] ~= "QGLEAVE" then return end
+        if #parts < 2 or parts[1] ~= "G_LEAVE" then return end
         
         local queueKey = parts[2]
         if queueKey ~= "ARENA_5V5" then return end
@@ -1381,31 +1497,39 @@
         local senderNameRealm = ns.FormatNameRealm(sender)
         local isSelf = (senderNameRealm == myName)
 
+        local function Starts(token)
+            return message:sub(1, #token) == token
+        end
+
         if ns.WargameFlow and ns.WargameFlow.IsWargamePaused()
         and not (ns.WargameFlow.IsInRoster and ns.WargameFlow.IsInRoster(senderNameRealm))
-        and message:sub(1, 7) ~= "QLEAVE," then
+        and not Starts("Q_LEAVE,") then
             return
         end
 
-        if message:sub(1, 7) == "Q_LEAVE," then
+        if Starts("Q_NOTE,") then
+            print("|cff00ff00[PvP20R Queue]|r " .. message:sub(8))
+        elseif Starts("Q_LEAVE,") then
             OnQueueLeave(sender, message)
-        elseif message:sub(1, 6) == "Q_STAT," then
+        elseif Starts("Q_STAT,") then
             if not isSelf then
-                OnQueueStatus(sender, message) end
-        elseif message:sub(1, 7) == "G_LEAVE," then
+                OnQueueStatus(sender, message)
+            end
+        elseif Starts("G_LEAVE,") then
             OnQueueGroupLeave(sender, message)
-        elseif message:sub(1, 9) == "G_RC_RESP," then
+        elseif Starts("G_RC_RESP,") then
             OnRoleResponse(sender, message)
-        elseif message:sub(1, 4) == "G_RC," then
-            local q = GetQueue(message:sub(5))
+        elseif Starts("G_RC,") then
+            local q = GetQueue(message:sub(6))
             if q then OnRoleCheck(sender, q.title) end
-        elseif message:sub(1, 7) == "H_LIST," then
+        elseif Starts("H_LIST_RESP,") then
+            if not isSelf then
+                OnFindOk(sender, message)
+            end
+        elseif Starts("H_LIST,") then
             if not isSelf then
                 OnHostList(sender, message)
             end
-        elseif message:sub(1, 12) == "H_LIST_RESP," then
-            if not isSelf then
-                OnFindOk(sender, message) end
         elseif ns.WargameFlow and ns.WargameFlow.HandleMessage then
             ns.WargameFlow.HandleMessage(sender, message)
         end
@@ -1428,7 +1552,7 @@
                     local name = q.title
                     if currentState == QueueState.MATCHED then name = "|cff19ff19" .. name .. "|r" end
                     rootDescription:CreateTitle(name)
-                    local btn = rootDescription:CreateButton(LEAVE_QUEUE, function() LeaveQueueByKey(q.key) end)
+                    local btn = rootDescription:CreateButton(LEAVE_QUEUE, function() LeaveQueueByKey(q.key); ResetWargame() end)
                     if IsInGroup(1) and not UnitIsGroupLeader("player", 1) and q.key == "ARENA_5V5" then
                         btn:SetEnabled(false)
                     end
@@ -1459,6 +1583,9 @@
                                 for _ in pairs(bucket) do realCount = realCount + 1 end
                             end
                             if realCount == 0 and q.startTime then realCount = 1 end
+                            -- Больше мест в ростере — хост ещё подбирает состав: 7/6 и 8/6 путают,
+                            -- показываем «одного не хватает».
+                            if realCount > q.maxPlayers then realCount = q.maxPlayers - 1 end
 
                             local subTitle = currentState == QueueState.QUEUED
                                 and (BATTLEFIELD_QUEUE_STATUS .. ": %d/%d"):format(realCount, q.maxPlayers)
@@ -1551,6 +1678,7 @@
     f:RegisterEvent("CLUB_MEMBER_ADDED")
     f:RegisterEvent("CLUB_MEMBER_REMOVED")
     f:RegisterEvent("CLUB_MEMBER_UPDATED")
+    f:RegisterEvent("CLUB_MEMBER_PRESENCE_UPDATED") -- зашёл/вышел: список онлайн для шёпота
 
     f:SetScript("OnEvent", function(self, event, ...)
         if event == "ADDON_LOADED" then
@@ -1576,12 +1704,15 @@
             OnGroupRosterUpdate()
         elseif event == "CLUB_ADDED" or event == "CLUB_REMOVED"
             or event == "CLUB_MEMBER_ADDED" or event == "CLUB_MEMBER_REMOVED"
-            or event == "CLUB_MEMBER_UPDATED" then
+            or event == "CLUB_MEMBER_UPDATED" or event == "CLUB_MEMBER_PRESENCE_UPDATED" then
             ScheduleCommunityScan()
         elseif event == "CHAT_MSG_ADDON" then
             local prefix, text, _, sender = ...
             if prefix == ns.PREFIX and text and text ~= "" then
+                text = ns.UnpackQueueKeys(text)
+                MarkHeard(sender)
                 if text:sub(1, 6) == "Q_STAT"
+                or text:sub(1, 6) == "Q_NOTE"
                 or text:sub(1, 7) == "Q_LEAVE"
                 or text:sub(1, 7) == "G_LEAVE"
                 or text:sub(1, 4) == "G_RC"
@@ -1618,6 +1749,17 @@
         IsAnyQueueActive = AnyQueueActive,
         GetQueueState = function() return currentState end,
         GetQueueRoster = function() return QueueRoster end,
+        SendQueueMessage = SendQueueMessage,
+        -- роли команды от хоста: { [имя] = "HEALER"/"DAMAGER"/"TANK" } или nil, если не собрать
+        AssignTeamRoles = AssignTeamRoles,
+        QueueFriendSender = function(queueKey, a, b)
+            local known = hostFindResults[queueKey]
+            if not known or not a or not b then return nil end
+            local ra, rb = known[a], known[b]
+            if ra and ra.friends and ra.friends[b] then return a end
+            if rb and rb.friends and rb.friends[a] then return b end
+            return nil
+        end,
         GetConstraints = GetConstraints,
         IsQueueSuspended = IsQueueSuspended,
         SetQueueMatched = function()
