@@ -44,7 +44,6 @@ ns.BRACKETS = {
 -- Арену варгейму передаём названием из GetWarGameTypeInfo — так делает кнопка
 -- варгейма Blizzard (Blizzard_PVPUI, WarGameStartButton_OnClick). ID (844)
 -- игра отвергла: «Запрос на маневры не прошел», проверено в игре.
--- Старое поведение — галочкой в /pvp20r dev.
 local function OfficialWarGameName(id)
 	if not (id and GetNumWarGameTypes and GetWarGameTypeInfo) then return nil end
 	for i = 1, GetNumWarGameTypes() do
@@ -54,6 +53,5 @@ local function OfficialWarGameName(id)
 end
 
 function ns.WargameMapArg(map)
-	if PvP_20_RatingDB and PvP_20_RatingDB.wgMapByID then return tostring(map.id) end
 	return OfficialWarGameName(map.id) or map.name
 end

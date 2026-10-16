@@ -203,11 +203,9 @@ local function GetRandomCacheBatch()
 end
 ns.GetRandomCacheBatch = GetRandomCacheBatch
 
--- Снимок в пакет: короткий вид (Utils/Compact.lua), время — разница с
--- GetServerTimeRounded(), «b» — номер минуты отправителя (ns.ResolveTimeBase).
+-- Снимок в пакет: короткий вид (Utils/Compact.lua), время — от начала сезона (ns.SeasonBase).
 function ns.EncodeSnapshot(snapshot)
-    local base, mark = ns.TimeBase()
-    return ns.EncodeForSend({ v = ns.PROTOCOL_VERSION, b = mark, s = ns.CompactSnapshot(snapshot, base) })
+    return ns.EncodeForSend({ v = ns.PROTOCOL_VERSION, s = ns.CompactSnapshot(snapshot, ns.SeasonBase()) })
 end
 
 function ns.BuildFullCacheSnapshot()
@@ -252,13 +250,13 @@ function ns.SendHandshake(channel, target)
     local timestamps = GetAllMatchTimestamps()
     local matchCount = #timestamps
     local matchLastTs = matchCount > 0 and timestamps[matchCount] or nil
-    local pdCount, pdLatest = GetWhitelistStats()
+    local pdCount = GetWhitelistStats()
     if matchCount == 0 and pdCount == 0 then return end
-    local base, mark = ns.TimeBase()
+    -- вайтлист — только число людей; время приходит потом, вместе со списком
     local payload = ns.EncodeForSend({
-        v = ns.PROTOCOL_VERSION, b = mark,
-        mth = matchCount > 0 and { c = matchCount, l = base - matchLastTs } or nil,
-        pdh = pdCount > 0 and { c = pdCount, l = base - pdLatest } or nil
+        v = ns.PROTOCOL_VERSION,
+        mth = matchCount > 0 and { c = matchCount, l = matchLastTs - ns.SeasonBase() } or nil,
+        pdh = pdCount > 0 and { c = pdCount } or nil
     })
     if payload then ns.SendAddonMessage(channel, target, payload, "BULK") end
 end
@@ -267,13 +265,13 @@ function ns.BroadcastHandshake()
     local timestamps = GetAllMatchTimestamps()
     local matchCount = #timestamps
     local matchLastTs = matchCount > 0 and timestamps[matchCount] or nil
-    local pdCount, pdLatest = GetWhitelistStats()
+    local pdCount = GetWhitelistStats()
     if matchCount == 0 and pdCount == 0 then return end
-    local base, mark = ns.TimeBase()
+    -- вайтлист — только число людей; время приходит потом, вместе со списком
     local payload = ns.EncodeForSend({
-        v = ns.PROTOCOL_VERSION, b = mark,
-        mth = matchCount > 0 and { c = matchCount, l = base - matchLastTs } or nil,
-        pdh = pdCount > 0 and { c = pdCount, l = base - pdLatest } or nil
+        v = ns.PROTOCOL_VERSION,
+        mth = matchCount > 0 and { c = matchCount, l = matchLastTs - ns.SeasonBase() } or nil,
+        pdh = pdCount > 0 and { c = pdCount } or nil
     })
     if payload then ns.SendInstance(payload) end
 end
@@ -321,8 +319,8 @@ local function OnCommReceived(prefix, payload, sender, distribution)
 
     local data = ns.DecodePayload(payload)
     if not data or data.v ~= ns.PROTOCOL_VERSION then return end
-    -- время в пакете — разница с GetServerTimeRounded() отправителя
-    local base = ns.ResolveTimeBase(data.b)
+    -- время в пакете — от начала сезона региона
+    local base = ns.SeasonBase()
 
     -- 1. Запрос кэша игроков (REQ) — отвечаем батчем + хендшейком
     if data.req then
@@ -347,7 +345,7 @@ local function OnCommReceived(prefix, payload, sender, distribution)
     -- 3. Хендшейк матчей (mth)
     if type(data.mth) == "table" then
         local remoteCount = data.mth.c
-        local remoteLastTs = base - (tonumber(data.mth.l) or 0)
+        local remoteLastTs = base + (tonumber(data.mth.l) or 0)
         local myTs = GetAllMatchTimestamps()
         local myCount = #myTs
         local myLastTs = myTs[#myTs] or 0
@@ -360,11 +358,11 @@ local function OnCommReceived(prefix, payload, sender, distribution)
 
     -- 4. Хендшейк whitelist (pdh)
     if type(data.pdh) == "table" then
-        local remoteCount = data.pdh.c
-        local remoteLastTs = base - (tonumber(data.pdh.l) or 0)
-        local myCount, myLastTs = GetWhitelistStats()
+        -- приходит только число людей; время — потом, вместе со списком «N_W»
+        local remoteCount = tonumber(data.pdh.c) or 0
+        local myCount = GetWhitelistStats()
 
-        if myCount < remoteCount or myLastTs < remoteLastTs then
+        if myCount < remoteCount then
             local reqPayload = ns.EncodeForSend({ v = ns.PROTOCOL_VERSION, pdr = true })
             if reqPayload then ns.SendWhisper(reqPayload, normalizedSender) end
         end
@@ -376,10 +374,9 @@ local function OnCommReceived(prefix, payload, sender, distribution)
     if data.mtr then
         local timestamps = GetAllMatchTimestamps()
         if #timestamps > 0 then
-            local myBase, mark = ns.TimeBase()
             local diffs = {}
-            for i, ts in ipairs(timestamps) do diffs[i] = myBase - ts end
-            local payload = ns.EncodeForSend({ v = ns.PROTOCOL_VERSION, b = mark, mt = diffs })
+            for i, ts in ipairs(timestamps) do diffs[i] = ts - base end
+            local payload = ns.EncodeForSend({ v = ns.PROTOCOL_VERSION, mt = diffs })
             if payload then ns.SendWhisper(payload, normalizedSender) end
         end
         return
@@ -389,14 +386,12 @@ local function OnCommReceived(prefix, payload, sender, distribution)
     if type(data.mt) == "table" then
         local matchDB = ns.GetMatchDB()
         if matchDB then
-            local myBase, mark = ns.TimeBase()
             local missing = {}
             for _, d in ipairs(data.mt) do
-                local ts = base - d
-                if not matchDB[ts] then missing[#missing + 1] = myBase - ts end
+                if not matchDB[base + d] then missing[#missing + 1] = d end
             end
             if #missing > 0 then
-                local req = ns.EncodeForSend({ v = ns.PROTOCOL_VERSION, b = mark, mr = missing })
+                local req = ns.EncodeForSend({ v = ns.PROTOCOL_VERSION, mr = missing })
                 if req then ns.SendWhisper(req, normalizedSender) end
             end
         end
@@ -407,21 +402,20 @@ local function OnCommReceived(prefix, payload, sender, distribution)
     if type(data.mr) == "table" then
         local matchDB = ns.GetMatchDB()
         if matchDB then
-            local myBase, mark = ns.TimeBase()
             local matches = {}
             for _, d in ipairs(data.mr) do
-                local ts = base - d
+                local ts = base + d
                 local raw = matchDB[ts]
                 if raw then
                     if type(raw) == "string" then
-                        matches[tostring(myBase - ts)] = raw
+                        matches[tostring(d)] = raw
                     elseif type(raw) == "table" and ns.CanCompress() then
-                        matches[tostring(myBase - ts)] = ns.EncodeMatch(raw)
+                        matches[tostring(d)] = ns.EncodeMatch(raw)
                     end
                 end
             end
             if next(matches) then
-                local resp = ns.EncodeForSend({ v = ns.PROTOCOL_VERSION, b = mark, md = matches })
+                local resp = ns.EncodeForSend({ v = ns.PROTOCOL_VERSION, md = matches })
                 if resp then ns.SendWhisper(resp, normalizedSender) end
             end
         end
@@ -434,7 +428,7 @@ local function OnCommReceived(prefix, payload, sender, distribution)
         if matchDB then
             local added = 0
             for dStr, d in pairs(data.md) do
-                local ts = tonumber(dStr) and base - tonumber(dStr)
+                local ts = tonumber(dStr) and base + tonumber(dStr)
                 if ts and not matchDB[ts] then
                     matchDB[ts] = d
                     added = added + 1

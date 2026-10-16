@@ -355,19 +355,17 @@ end
 -- ---------------------------------------------------------------------------
 -- Вайтлист: { ["Имя-Сервер"] = время } → «N_W…»
 -- ---------------------------------------------------------------------------
--- Время — разница с GetServerTimeRounded() отправителя, рядом 6 бит номера
--- его минуты (ns.TimeBase / ns.ResolveTimeBase).
+-- Время — секунд от начала сезона региона (ns.SeasonBase), со знаком.
 function ns.PackWhitelist(list)
-	local base, mark = ns.TimeBase()
+	local base = ns.SeasonBase()
 	local names = {}
 	for name, ts in pairs(list) do
 		if type(name) == "string" and type(ts) == "number" and pcall(SplitName, name) then names[#names + 1] = name end
 	end
 	local ok, packed = pcall(Encode, "W", function(w)
-		w.bits(mark, 6)
 		local rt = WriteRealmTable(w, names)
 		w.varint(#names)
-		for _, name in ipairs(names) do WriteName(w, rt, name); w.signed(base - math.floor(list[name])) end
+		for _, name in ipairs(names) do WriteName(w, rt, name); w.signed(math.floor(list[name]) - base) end
 	end)
 	return ok and packed or nil
 end
@@ -375,12 +373,12 @@ end
 function ns.UnpackWhitelist(payload)
 	if type(payload) ~= "string" or payload:sub(1, 3) ~= "N_W" then return nil end
 	local ok, list = pcall(Decode, payload, function(r)
-		local base = ns.ResolveTimeBase(r.bits(6))
+		local base = ns.SeasonBase()
 		local rt = ReadRealmTable(r)
 		local out = {}
 		for _ = 1, r.varint() do
 			local name = ReadName(r, rt)
-			out[name] = base - r.signed()
+			out[name] = base + r.signed()
 		end
 		return out
 	end)

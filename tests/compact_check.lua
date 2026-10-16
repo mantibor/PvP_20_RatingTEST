@@ -38,12 +38,10 @@ for _, s in ipairs({ "", "\0", "\0\0", "a", string.rep("x", 253), string.rep("x"
 end
 print("LibEncoding-COBS ok")
 
--- время: разница с GetServerTimeRounded(), минута могла смениться в пути
+-- время: в пересылках — от начала сезона региона
 assert(ns.GetServerTimeRounded() == math.floor(NOW / 60) * 60)
-local base, mark = ns.TimeBase()
-NOW = NOW + 61
-assert(ns.ResolveTimeBase(mark) == base, "base не восстановилась через минуту")
-NOW = NOW - 61
+local base = ns.SeasonBase()
+assert(base == ns.SEASON_START_UTC[3])
 print("время ok")
 
 -- ключ «ник + GUID»
@@ -76,7 +74,7 @@ print("кэш стычек ok")
 local snap = {}
 for g, r in pairs(skirmish) do snap[g] = { n = r.name, r = r.rating, b = r.bestRating, p = r.played, w = r.won, c = r.class, u = r.lastUpdate } end
 same(snap, ns.ExpandSnapshot(ns.CompactSnapshot(snap, base), base), "снимок")
-print("снимок ok: " .. #ns.EncodeForSend({ v = "2", s = snap }) .. " → " .. #ns.EncodeForSend({ v = "3", b = mark, s = ns.CompactSnapshot(snap, base) }) .. " байт")
+print("снимок ok: " .. #ns.EncodeForSend({ v = "2", s = snap }) .. " → " .. #ns.EncodeForSend({ v = "3", s = ns.CompactSnapshot(snap, base) }) .. " байт")
 
 -- матч: GUID известен / GUID был секретом (ключ — ник)
 local match = { matchType = "solo_shuffle", winner = 1, scores = {
@@ -87,6 +85,15 @@ local match = { matchType = "solo_shuffle", winner = 1, scores = {
 same(match, ns.DecodeMatch(ns.EncodeMatch(match)), "матч")
 same(match, ns.ExpandMatch(match), "старый вид матча читается")
 print("матч ok: " .. #ns.EncodeEntry(match) .. " → " .. #ns.EncodeMatch(match) .. " байт")
+-- поле боя: статы, кроме побед в раундах, не хранятся
+local bg = { matchType = "random_bg", winner = 0, scores = { [guid1] = { guid = guid1, name = name1, class = "PRIEST", faction = 0,
+	stats = { { pvpStatID = 1, pvpStatValue = 7 }, { pvpStatID = 2, pvpStatValue = 3 } } } } }
+local bgBack = ns.DecodeMatch(ns.EncodeMatch(bg))
+assert(bgBack.matchType == "random_bg" and bgBack.scores[guid1].stats == nil and ns.CompactMatch(bg).m == "RBG")
+-- вид сборки 15.10-01: t и статы { i, v }
+local v1 = { t = "solo_shuffle", w = 1, s = { ["Кронов-1602-0A1B2C3D"] = { c = 5, f = 0, s = { { i = 1032, v = 4 } } } } }
+same(match.scores[guid1], ns.ExpandMatch(v1).scores[guid1], "матч 15.10-01")
+print("поле боя и вид 15.10-01 ok")
 
 -- пакеты списков ников
 local P = { "Кронов-Гордунни", "Меро-ТкачСмерти", "Рекзеп-ВечнаяПесня", "Попынчик-Ревущийфьорд",
@@ -114,7 +121,7 @@ end
 assert(ns.PackNameMessage("Q_STAT,SS,1") == nil)
 
 -- вайтлист со временем
-local wl = { ["Кронов-Гордунни"] = NOW, ["Рекзеп-ВечнаяПесня"] = NOW - 86400, ["Bob-Silvermoon"] = NOW - 1, ["КРОНОВ-Гордунни"] = NOW - 7 }
+local wl = { ["Старичок-Гордунни"] = base - 3600, ["Кронов-Гордунни"] = NOW, ["Рекзеп-ВечнаяПесня"] = NOW - 86400, ["Bob-Silvermoon"] = NOW - 1, ["КРОНОВ-Гордунни"] = NOW - 7 }
 local packedWL = ns.PackWhitelist(wl)
 NOW = NOW + 30 -- пришёл через полминуты
 same(wl, ns.UnpackWhitelist(packedWL), "вайтлист")
@@ -141,7 +148,7 @@ local oldMatch = ns.EncodeEntry(match)
 local rdb = { RealmPack = 1, SkirmishData = ns.EncodeEntry(skirmish) }
 local mdb = { [1791000000] = oldMatch }
 ns.RunMigrations(rdb, mdb)
-assert(rdb.Schema == 2 and rdb.RealmPack == nil)
+assert(rdb.Schema == 3 and rdb.RealmPack == nil)
 same(skirmish, ns.ExpandSkirmish(ns.DecodeEntry(rdb.SkirmishData)), "кэш после миграции")
 same(match, ns.DecodeMatch(mdb[1791000000]), "матч после миграции")
 assert(ns.DecodeEntry(mdb[1791000000]).s, "матч не в коротком виде")
@@ -150,7 +157,7 @@ local bin = { Migration = 2, SkirmishData = "~Kxx", Whitelist = "~Wxx", BinaryBa
 local binM = { [1791000000] = "~Mxx", [1791000180] = oldMatch }
 ns.RunMigrations(bin, binM)
 print = printed
-assert(bin.Migration == nil and bin.BinaryBackup == nil and bin.Whitelist == nil and bin.Schema == 2)
+assert(bin.Migration == nil and bin.BinaryBackup == nil and bin.Whitelist == nil and bin.Schema == 3)
 same(skirmish, ns.ExpandSkirmish(ns.DecodeEntry(bin.SkirmishData)), "кэш из бэкапа")
 assert(binM[1791000000] == nil and ns.DecodeMatch(binM[1791000180]))
 print("миграции ok")

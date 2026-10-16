@@ -4,12 +4,30 @@ local addonName, ns = ...
 -- Миграции сохранений: шаги по номерам, каждый выполняется один раз
 -- ============================================================================
 -- Номер выполненного шага — regionDB["Schema"]. Вызывается из Database.lua на
--- ADDON_LOADED: после InitArchiveKeys, до распаковки кэшей. Новый шаг —
+-- ADDON_LOADED до InitArchiveKeys и распаковки кэшей. Новый шаг —
 -- функция в конец STEPS.
 
 local function Blob(raw)
 	if type(raw) == "string" then return raw end
 	if type(raw) == "table" then return rawget(raw, "blob") end
+end
+
+-- Перепаковка кэша стычек и архива матчей в текущий короткий вид (Compact.lua)
+local function Repack(regionDB, matchDB)
+	local done = 0
+	for ts, raw in pairs(matchDB) do
+		local blob = Blob(raw)
+		if type(ts) == "number" and type(blob) == "string" then
+			local data = ns.DecodeMatch(blob)
+			local packed = type(data) == "table" and ns.EncodeMatch(data)
+			if packed then matchDB[ts] = packed; done = done + 1 end
+		end
+	end
+	local skirmish = type(regionDB["SkirmishData"]) == "string" and ns.DecodeEntry(regionDB["SkirmishData"])
+	if type(skirmish) == "table" then
+		regionDB["SkirmishData"] = ns.EncodeEntry(ns.CompactSkirmish(ns.ExpandSkirmish(skirmish))) or regionDB["SkirmishData"]
+	end
+	return done
 end
 
 local STEPS = {
@@ -31,22 +49,11 @@ local STEPS = {
 
 	-- 2. Короткий вид (Utils/Compact.lua): поля по одной букве, класс номером,
 	--    ник и GUID одной строкой. Кэш стычек и архив матчей.
-	function(regionDB, matchDB)
-		local done = 0
-		for ts, raw in pairs(matchDB) do
-			local blob = Blob(raw)
-			if type(ts) == "number" and type(blob) == "string" then
-				local data = ns.DecodeMatch(blob)
-				local packed = type(data) == "table" and ns.EncodeMatch(data)
-				if packed then matchDB[ts] = packed; done = done + 1 end
-			end
-		end
-		local skirmish = type(regionDB["SkirmishData"]) == "string" and ns.DecodeEntry(regionDB["SkirmishData"])
-		if type(skirmish) == "table" then
-			regionDB["SkirmishData"] = ns.EncodeEntry(ns.CompactSkirmish(ns.ExpandSkirmish(skirmish))) or regionDB["SkirmishData"]
-		end
-		return "короткий вид, матчей " .. done
-	end,
+	function(regionDB, matchDB) return "короткий вид, матчей " .. Repack(regionDB, matchDB) end,
+
+	-- 3. Сервер без «#» («Кронов-1602»), тип матча SS/RBG/5V5, из статов —
+	--    только победы в раундах соло-суматохи (16.10).
+	function(regionDB, matchDB) return "без «#», типы и статы коротко, матчей " .. Repack(regionDB, matchDB) end,
 }
 
 -- Двоичный формат из PR #2 (ветка binary-cache, сборка 10.10-06) отменён. Кто

@@ -1,12 +1,14 @@
 local addonName, ns = ...
 
 -- ============================================================================
--- Сжатие серверов в именах: «Кронов-Гордунни» ↔ «Кронов-#1602»
+-- Сжатие серверов в именах: «Кронов-Гордунни» ↔ «Кронов-1602»
 -- ============================================================================
 -- Номер — ID сервера Blizzard по LibRealmInfo. Внутри аддона имена всегда
 -- полные: сжатие только на выходе и входе — Encode/Decode в Compression.lua
 -- (сохранения и пакеты данных) и сообщения очереди в Comm.lua.
--- «#» отличает номер сервера от прочих «-цифр»: метка версии 09.10-06, GUID.
+-- Номер отличается от прочих «-цифр» тем, что перед дефисом ровно один кусок
+-- без цифр и точек: метка версии «V:09.10-06» и GUID «Player-1602-…» не подходят.
+-- Старая запись «Кронов-#1602» (сборки до 16.10) читается так же.
 -- Неизвестный библиотеке сервер остаётся как есть.
 
 local LRI = LibStub and LibStub("LibRealmInfo", true)
@@ -40,12 +42,12 @@ function ns.PackName(s)
 	if not name then return s end
 	if not toId then Build() end
 	local id = toId[realm]
-	return id and (name .. "-#" .. id) or s
+	return id and (name .. "-" .. id) or s
 end
 
 function ns.UnpackName(s)
 	if type(s) ~= "string" then return s end
-	local name, id = s:match("^([^%-]+)%-#(%d+)$")
+	local name, id = s:match("^([^%-%d%.%s]+)%-#?(%d+)$")
 	if not name then return s end
 	if not toName then Build() end
 	local realm = toName[tonumber(id)]

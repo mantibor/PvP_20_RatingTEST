@@ -27,25 +27,15 @@ function ns.IsNew(ts)
 	if not ts or ts <= ns.EPOCH_MIN then return true end
 	return (time() - ts) <= ns.MAX_CACHE_AGE
 end
+
 --- GetServerTime(), округлённый вниз до минуты.
 function ns.GetServerTimeRounded()
 	return math.floor(GetServerTime() / 60) * 60
 end
 
--- Время в пересылках — разница с GetServerTimeRounded() отправителя (base - ts).
--- Сообщение может прийти уже в следующей минуте, поэтому рядом идёт номер минуты
--- отправителя по модулю 60 (поле «b»): по нему получатель находит ту же base.
-function ns.TimeBase()
-	local base = ns.GetServerTimeRounded()
-	return base, (base / 60) % 60
-end
-
-function ns.ResolveTimeBase(mark)
-	local base = ns.GetServerTimeRounded()
-	if type(mark) ~= "number" then return base end
-	for _ = 0, 59 do
-		if (base / 60) % 60 == mark then return base end
-		base = base - 60
-	end
-	return ns.GetServerTimeRounded()
+-- Время в пересылках — разница с началом сезона региона (ns.SEASON_START_UTC):
+-- точка одна у всех игроков региона, поэтому номер минуты отправителя не нужен.
+-- Записи до начала сезона дают отрицательную разницу — это нормально.
+function ns.SeasonBase()
+	return ns.SEASON_START_UTC[GetCurrentRegion()] or 0
 end

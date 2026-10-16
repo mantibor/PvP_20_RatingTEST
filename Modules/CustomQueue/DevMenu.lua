@@ -205,7 +205,6 @@ local function BuildState()
         add("  Жду вызов от: " .. tostring(wf.expectedFrom)
             .. (wf.acceptLeft > 0 and ("  (автопринятие ещё " .. math.floor(wf.acceptLeft) .. " с)") or ""))
         add("  Жду приглашение от лидера: " .. tostring(wf.myTeamLeader))
-        add("  Арена шлётся как: " .. ((PvP_20_RatingDB and PvP_20_RatingDB.wgMapByID) and "ID" or "название"))
         local assigned = ns.WargameFlow.GetAssignedRole and ns.WargameFlow.GetAssignedRole()
         local plan = ns.WargameFlow.SpecPlan and ns.WargameFlow.SpecPlan()
         add("  Роль от хоста: " .. tostring(assigned or "нет (вне состава)") .. "   специализация: "
@@ -250,17 +249,6 @@ local function CreateDevFrame()
     refresh:SetPoint("TOPLEFT", 12, -30)
     local clear = MakeButton(frame, "Очистить журнал", 130, function() PvP20RDevLog = {}; Refresh() end)
     clear:SetPoint("LEFT", refresh, "RIGHT", 6, 0)
-
-    local byName = CreateFrame("CheckButton", nil, frame, "UICheckButtonTemplate")
-    byName:SetPoint("LEFT", clear, "RIGHT", 10, 0)
-    local byNameLabel = byName.text or byName.Text
-    byNameLabel:SetText("Арену слать числом (ID), старый способ")
-    byName:SetScript("OnShow", function(self) self:SetChecked(PvP_20_RatingDB and PvP_20_RatingDB.wgMapByID) end)
-    byName:SetScript("OnClick", function(self)
-        PvP_20_RatingDB = PvP_20_RatingDB or {}
-        PvP_20_RatingDB.wgMapByID = self:GetChecked() and true or nil
-        Log("формат арены: " .. (PvP_20_RatingDB.wgMapByID and "ID" or "название"))
-    end)
 
     -- Ручной вызов по клику: проверяет формат строки и то, пускает ли игра
     -- StartWarGameByName от аддона вообще. Аддон занял /wargame, так что

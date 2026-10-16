@@ -101,12 +101,12 @@ end
 
 -- ---------------------------------------------------------------------------
 -- Снимок кэша для сети: { [guid] = { n, r, b, p, w, c, u } } — поля уже короткие;
--- ключ — JoinKey, класс — номер, u — разница с base (ns.TimeBase).
+-- ключ — JoinKey, класс — номер, u — секунд от начала сезона (ns.SeasonBase).
 -- ---------------------------------------------------------------------------
 function ns.CompactSnapshot(snapshot, base)
 	local out = {}
 	for guid, rec in pairs(snapshot) do
-		local short = { r = rec.r, b = rec.b, p = rec.p, w = rec.w, c = ClassId(rec.c), u = base - (tonumber(rec.u) or base) }
+		local short = { r = rec.r, b = rec.b, p = rec.p, w = rec.w, c = ClassId(rec.c), u = (tonumber(rec.u) or base) - base }
 		local key = ns.JoinKey(guid, rec.n)
 		if key then out[key] = short else short.n = rec.n; out[guid] = short end
 	end
@@ -120,7 +120,7 @@ function ns.ExpandSnapshot(snapshot, base)
 			local guid, name
 			if not rec.n then guid, name = ns.SplitKey(key) end
 			out[guid or key] = { n = name or rec.n, r = rec.r, b = rec.b, p = rec.p, w = rec.w,
-				c = ClassToken(rec.c), u = base - (tonumber(rec.u) or 0) }
+				c = ClassToken(rec.c), u = base + (tonumber(rec.u) or 0) }
 		end
 	end
 	return out
@@ -131,26 +131,44 @@ end
 -- ---------------------------------------------------------------------------
 -- Во время активного матча GUID — секрет (ns.SafeGuid даёт nil), строка счёта
 -- лежит под «Имя-Сервер» без guid — так она и сохраняется, склеивать не с чем.
-local MATCH = { matchType = "t", winner = "w", scores = "s" }
+local MATCH = { matchType = "m", winner = "w", scores = "s" }
 local SCORE = { guid = "g", name = "n", class = "c", faction = "f", stats = "s" }
-local STAT = { pvpStatID = "i", pvpStatValue = "v" }
-local MATCH_LONG, SCORE_LONG, STAT_LONG = Invert(MATCH), Invert(SCORE), Invert(STAT)
+local MATCH_LONG, SCORE_LONG = Invert(MATCH), Invert(SCORE)
 
-local function Stats(stats, map)
-	if type(stats) ~= "table" then return stats end
-	local out = {}
-	for i, st in pairs(stats) do out[i] = type(st) == "table" and Rename(st, map) or st end
-	return out
+-- Тип матча коротко. Незнакомый тип пишется как есть.
+local MATCH_TYPE = { solo_shuffle = "SS", random_bg = "RBG", arena_5v5 = "5V5" }
+local MATCH_TYPE_LONG = Invert(MATCH_TYPE)
+
+-- Из статов матча читается только один — победы в раундах соло-суматохи
+-- (pvpStatID 1032, Rating.lua GetShuffleRoundsForGuid). Храним его значение
+-- числом, остальные статы (они были только у полей боя) не храним.
+local SHUFFLE_WINS_STAT = 1032
+
+local function ShuffleWins(stats)
+	if type(stats) ~= "table" then return nil end
+	for _, st in pairs(stats) do
+		if type(st) == "table" and st.pvpStatID == SHUFFLE_WINS_STAT then return st.pvpStatValue end
+	end
+end
+
+local function StatsFromWins(s)
+	if type(s) == "number" then return { { pvpStatID = SHUFFLE_WINS_STAT, pvpStatValue = s } } end
+	if type(s) == "table" then -- вид сборки 15.10-01: { { i, v } }
+		local out = {}
+		for i, st in pairs(s) do out[i] = { pvpStatID = st.i, pvpStatValue = st.v } end
+		return out
+	end
 end
 
 function ns.CompactMatch(db)
 	if type(db) ~= "table" or type(db.scores) ~= "table" then return db end
 	local out = Rename(db, MATCH)
+	out.m = MATCH_TYPE[out.m] or out.m
 	out.s = {}
 	for key, score in pairs(db.scores) do
 		local short = Rename(score, SCORE)
 		short.c = ClassId(short.c)
-		short.s = Stats(short.s, STAT)
+		short.s = ShuffleWins(score.stats)
 		local joined = ns.JoinKey(score.guid, score.name)
 		if joined and key == score.guid then
 			key, short.g, short.n = joined, nil, nil
@@ -164,12 +182,14 @@ end
 
 function ns.ExpandMatch(db)
 	if type(db) ~= "table" or type(db.s) ~= "table" or db.scores then return db end -- старый вид
+	if db.t then db.m, db.t = db.t, nil end -- вид сборки 15.10-01
 	local out = Rename(db, MATCH_LONG)
+	out.matchType = MATCH_TYPE_LONG[out.matchType] or out.matchType
 	out.scores = {}
 	for key, short in pairs(db.s) do
 		local score = Rename(short, SCORE_LONG)
 		score.class = ClassToken(score.class)
-		score.stats = Stats(score.stats, STAT_LONG)
+		score.stats = StatsFromWins(score.stats)
 		local guid, name
 		if not short.n and not short.g then guid, name = ns.SplitKey(key) end
 		if guid then
