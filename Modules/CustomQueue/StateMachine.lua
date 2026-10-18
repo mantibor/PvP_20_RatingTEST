@@ -574,7 +574,7 @@
     -- ============================================================================
     -- HEARTBEAT
     -- ============================================================================
-    local function IsRealQueueSuspended()
+    local function IsQueueSuspended()
         local inQueue, paused = false, true
         for i = 1, NUM_LE_LFG_CATEGORYS do
             local mode, submode = GetLFGMode(i)
@@ -620,10 +620,6 @@
         if rcInProgress and rcIsBG then inQueue, paused = true, false end
         if CanHearthAndResurrectFromArea() then inQueue, paused = true, false end
         return inQueue and paused
-    end
-
-    local function IsQueueSuspended()
-        return IsRealQueueSuspended()
     end
 
     local function SendQueueStat(queueKey)
@@ -885,6 +881,12 @@
         local q = GetQueue(key)
         if not q then return false end
 
+        local hasTank, hasHealer, hasDps = GetPVPRoles()
+        if not (hasTank or hasHealer or hasDps) then
+            UIErrorsFrame:AddMessage(ERR_LFG_NO_ROLES_SELECTED, RED_FONT_COLOR:GetRGB())
+            return false
+        end
+    
         if key == "ARENA_5V5" and IsInGroup(1) and (GetNumGroupMembers(1) or 0) > 1 and not UnitIsGroupLeader("player", 1) then
             return false
         end
