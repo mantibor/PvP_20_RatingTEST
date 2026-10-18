@@ -312,7 +312,7 @@ local function InitializeRow(row, elementData)
 	if not row or not elementData then return end
 	local e = elementData
 	local widths = {}
-	for _, col in ipairs(ns.COLUMN_INFO) do widths[col.key] = col.width end
+	for _, col in ipairs(LD.COLUMN_INFO) do widths[col.key] = col.width end
 	
 	if row.Rank then row.Rank:SetWidth(math.max(widths.rank - 6, 1)) end
 	if row.Name then row.Name:SetWidth(math.max(widths.name - 30, 1)) end
