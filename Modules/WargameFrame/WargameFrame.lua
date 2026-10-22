@@ -785,7 +785,7 @@ function WargameFrameMixin:SendBNetFriendWarGame(map, mapDescription, accountNam
 		local targetNameRealm = ns.FormatNameRealm(accountInfo.gameAccountInfo and accountInfo.gameAccountInfo.characterName, accountInfo.gameAccountInfo and accountInfo.gameAccountInfo.realmName)
 		if not targetNameRealm then
 			accountName = accountInfo.accountName or accountInfo.battleTag
-			StartWarGameByName(accountName .. " " .. ns.WargameMapArg(map))
+			StartWarGameByName(accountName .. " " .. map.name)
 			ChatPrint(L["War Game request sent to "] .. GetLeaderDisplayText(accountInfo) .. " - " .. mapDescription .. ".")
 			return
 		end
@@ -797,12 +797,12 @@ function WargameFrameMixin:SendBNetFriendWarGame(map, mapDescription, accountNam
 			local targetAccountName = pending and pending.response and pending.response.leaderName and ns.FindBNetFriendByNameRealm(pending.response.leaderName)
 			local targetInfo = targetAccountName or d.accountInfo
 			local finalAccountName = targetAccountName and (targetAccountName.accountName or targetAccountName.battleTag) or d.accountInfo.accountName or d.accountInfo.battleTag
-			StartWarGameByName(finalAccountName .. " " .. ns.WargameMapArg(d.map))
+			StartWarGameByName(finalAccountName .. " " .. d.map.name)
 			ChatPrint(L["War Game request sent to "] .. GetLeaderDisplayText(targetInfo) .. " - " .. d.mapDescription .. ".")
 		end, friendData)
 		return
 	end
-	StartWarGameByName(accountName .. " " .. ns.WargameMapArg(map))
+	StartWarGameByName(accountName .. " " .. map.name)
 	ChatPrint(L["War Game request sent to "] .. GetLeaderDisplayText(accountInfo) .. " - " .. mapDescription .. ".")
 end
 

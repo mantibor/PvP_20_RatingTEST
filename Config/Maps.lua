@@ -41,17 +41,3 @@ ns.BRACKETS = {
 	{ name = ARENA_3V3,              size = 3 },
 	{ name = ARENA_5V5,              size = 5 },
 }
--- Арену варгейму передаём названием из GetWarGameTypeInfo — так делает кнопка
--- варгейма Blizzard (Blizzard_PVPUI, WarGameStartButton_OnClick). ID (844)
--- игра отвергла: «Запрос на маневры не прошел», проверено в игре.
-local function OfficialWarGameName(id)
-	if not (id and GetNumWarGameTypes and GetWarGameTypeInfo) then return nil end
-	for i = 1, GetNumWarGameTypes() do
-		local name, _, _, typeID = GetWarGameTypeInfo(i)
-		if typeID == id then return name end
-	end
-end
-
-function ns.WargameMapArg(map)
-	return OfficialWarGameName(map.id) or map.name
-end

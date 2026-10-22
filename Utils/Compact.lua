@@ -164,11 +164,15 @@ function ns.CompactMatch(db)
 	if type(db) ~= "table" or type(db.scores) ~= "table" then return db end
 	local out = Rename(db, MATCH)
 	out.m = MATCH_TYPE[out.m] or out.m
+	-- у соло-суматохи нет фракций — ни победителя, ни фракции игрока
+	local isShuffle = (db.matchType == "solo_shuffle")
+	if isShuffle then out.w = nil end
 	out.s = {}
 	for key, score in pairs(db.scores) do
 		local short = Rename(score, SCORE)
 		short.c = ClassId(short.c)
 		short.s = ShuffleWins(score.stats)
+		if isShuffle then short.f = nil end
 		local joined = ns.JoinKey(score.guid, score.name)
 		if joined and key == score.guid then
 			key, short.g, short.n = joined, nil, nil

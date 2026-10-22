@@ -8,22 +8,30 @@ local addonName, ns = ...
 -- (сохранения и пакеты данных) и сообщения очереди в Comm.lua.
 -- Номер отличается от прочих «-цифр» тем, что перед дефисом ровно один кусок
 -- без цифр и точек: метка версии «V:09.10-06» и GUID «Player-1602-…» не подходят.
--- Старая запись «Кронов-#1602» (сборки до 16.10) читается так же.
 -- Неизвестный библиотеке сервер остаётся как есть.
 
 local LRI = LibStub and LibStub("LibRealmInfo", true)
-local toId, toName
+local toId, toName, toEnglish, regionOf
+
+-- Регион в обозначениях LibRealmInfo: у аддона Америка — «NA», у библиотеки — «US».
+-- Без этой замены у игроков NA ни один сервер не находился.
+function ns.RealmRegion()
+	local key = ns.GetRegionKey and ns.GetRegionKey()
+	return key == "NA" and "US" or key
+end
 
 -- Одна таблица на сессию: GetRealmInfo в библиотеке перебирает все ~1200
 -- серверов на каждый вызов, а имён в сохранениях — тысячи.
 local function Build()
-	toId, toName = {}, {}
+	toId, toName, toEnglish, regionOf = {}, {}, {}, {}
 	if not LRI then return end
-	local region = ns.GetRegionKey and ns.GetRegionKey()
+	local region = ns.RealmRegion()
 	for id = 1, 4000 do
 		local rid, _, apiName, _, _, _, realmRegion, _, _, _, englishApiName = LRI:GetRealmInfoByID(id)
+		if rid then regionOf[rid] = realmRegion end
 		if rid and apiName and (not region or realmRegion == region) then
 			toName[rid] = apiName
+			toEnglish[rid] = englishApiName or apiName
 			toId[apiName] = rid
 			-- английское имя того же сервера — тоже в номер (разжимается в родное)
 			if englishApiName and not toId[englishApiName] then toId[englishApiName] = rid end
@@ -34,6 +42,14 @@ end
 -- Номер сервера и обратно (Compact.lua, NamePack.lua)
 function ns.RealmIdOf(realm) if not toId then Build() end return toId[realm] end
 function ns.RealmNameOf(id) if not toName then Build() end return toName[id] end
+-- Английское имя сервера слитно (HowlingFjord) — для лидерборда и армори
+function ns.RealmEnglishName(realm)
+	if not toId then Build() end
+	local id = toId[realm]
+	return id and toEnglish[id]
+end
+-- Регион сервера по номеру («EU», «US»…), любой регион; nil — LibRealmInfo его не знает
+function ns.RealmRegionById(id) if not regionOf then Build() end return regionOf[id] end
 
 -- Только «Имя-Сервер» с одним дефисом: GUID и составные строки не трогаем.
 function ns.PackName(s)
@@ -47,7 +63,7 @@ end
 
 function ns.UnpackName(s)
 	if type(s) ~= "string" then return s end
-	local name, id = s:match("^([^%-%d%.%s]+)%-#?(%d+)$")
+	local name, id = s:match("^([^%-%d%.%s]+)%-(%d+)$")
 	if not name then return s end
 	if not toName then Build() end
 	local realm = toName[tonumber(id)]

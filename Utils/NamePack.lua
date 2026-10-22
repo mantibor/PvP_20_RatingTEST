@@ -3,19 +3,17 @@ local addonName, ns = ...
 -- ============================================================================
 -- Пересылка списков ников: вайтлист, H_LIST, H_LIST_RESP, WG_SETUP
 -- ============================================================================
--- Только здесь используются LibEncoding-COBS и UTF8 (просьба автора).
--- Сообщение — поток битов, поверх него COBS (в аддон-канале нельзя байт \0):
+-- Сообщение — поток битов, поверх него LibDeflate:EncodeForWoWAddonChannel
+-- (в аддон-канале нельзя байт \0; сжатия тут нет, только замена этого байта):
 --   ник     2 бита алфавита, 4 бита числа букв, по 5–6 бит на букву;
---           регистр не пишется — строчные через string.utf8lower, первая буква
---           поднимается string.utf8upper при чтении;
+--           регистр не пишется — строчные по таблице букв ниже, первая буква
+--           поднимается при чтении;
 --   сервер  номера LibRealmInfo всех серверов сообщения — по возрастанию,
 --           первый целиком, дальше разности; ник хранит индекс в этом списке.
 -- Пакет уходит, только если разжимается точь-в-точь в исходный текст
 -- (проверка в ns.PackQueueKeys) — иначе прежний текстовый вид.
 
-local COBS = LibStub("LibEncoding-COBS")
-local utf8lower, utf8upper = string.utf8lower, string.utf8upper
-local utf8len, utf8sub = string.utf8len, string.utf8sub
+local LibDeflate = LibStub("LibDeflate")
 local band, bor, lshift, rshift = bit.band, bit.bor, bit.lshift, bit.rshift
 local schar, sbyte, concat = string.char, string.byte, table.concat
 
@@ -97,12 +95,16 @@ local function BitsFor(n) local b = 0; while lshift(1, b) < n do b = b + 1 end; 
 --   2 латиница с диакритикой, 6 бит: a–z и строчные Latin-1
 --   3 ник как есть (UTF-8): длиннее 15 букв или не «Заглавная + строчные»
 -- Код буквы 0 — экранирование: 8 бит длины и байты буквы.
+local UTF8_CHAR = "[%z\1-\127\194-\244][\128-\191]*"
+local function Chars(s)
+	local out = {}
+	for ch in s:gmatch(UTF8_CHAR) do out[#out + 1] = ch end
+	return out
+end
+
 local function Letters(s)
-	local t = { letter = {}, code = {} }
-	for i = 1, utf8len(s) do
-		local ch = utf8sub(s, i, i)
-		t.letter[i] = ch; t.code[ch] = i
-	end
+	local t = { letter = Chars(s), code = {} }
+	for i, ch in ipairs(t.letter) do t.code[ch] = i end
 	return t
 end
 local LAT = "abcdefghijklmnopqrstuvwxyz"
@@ -114,17 +116,36 @@ local ALPHABETS = {
 local WIDTH = { [0] = 5, [1] = 5, [2] = 6 }
 local RAW_NAME, ESCAPE = 3, 0
 
-local function Capitalize(s) return utf8upper(utf8sub(s, 1, 1)) .. utf8sub(s, 2) end
+-- Строчные и заглавные — парами, по всем буквам алфавитов (и ё, ъ для регистра).
+-- Буква не из этих пар регистра не меняет.
+local LOWER = LAT .. "абвгдеёжзийклмнопрстуфхцчшщъыьэюяàáâãäåæçèéêëìíîïðñòóôõöøùúûüýþÿ"
+local UPPER = "ABCDEFGHIJKLMNOPQRSTUVWXYZАБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯÀÁÂÃÄÅÆÇÈÉÊËÌÍÎÏÐÑÒÓÔÕÖØÙÚÛÜÝÞŸ"
+local TO_LOWER, TO_UPPER = {}, {}
+do
+	local low, up = Chars(LOWER), Chars(UPPER)
+	for i, ch in ipairs(low) do TO_LOWER[up[i]] = ch; TO_UPPER[ch] = up[i] end
+end
+
+local function Lower(chars)
+	local out = {}
+	for i, ch in ipairs(chars) do out[i] = TO_LOWER[ch] or ch end
+	return out
+end
+
+local function Capitalize(chars)
+	if not chars[1] then return "" end
+	return (TO_UPPER[chars[1]] or chars[1]) .. concat(chars, "", 2)
+end
 
 local function WriteNick(w, nick)
-	local lower = utf8lower(nick)
-	local n = utf8len(lower)
+	local lower = Lower(Chars(nick))
+	local n = #lower
 	local best, bestCost
 	if n <= 15 and Capitalize(lower) == nick then
 		for a = 0, 2 do
 			local cost = 0
 			for i = 1, n do
-				local ch = utf8sub(lower, i, i)
+				local ch = lower[i]
 				cost = cost + WIDTH[a] + (ALPHABETS[a].code[ch] and 0 or 8 + 8 * #ch)
 			end
 			if not bestCost or cost < bestCost then best, bestCost = a, cost end
@@ -134,7 +155,7 @@ local function WriteNick(w, nick)
 	w.bits(best, 2); w.bits(n, 4)
 	local codes, width = ALPHABETS[best].code, WIDTH[best]
 	for i = 1, n do
-		local ch = utf8sub(lower, i, i)
+		local ch = lower[i]
 		if codes[ch] then
 			w.bits(codes[ch], width)
 		else
@@ -158,8 +179,7 @@ local function ReadNick(r)
 			out[i] = letters[sym] or error("нет буквы")
 		end
 	end
-	local s = concat(out)
-	return s == "" and s or Capitalize(s)
+	return Capitalize(out)
 end
 
 -- ---------------------------------------------------------------------------
@@ -320,11 +340,11 @@ local function Encode(tag, write, m)
 	local w = Writer()
 	w.bits(FORMAT, 8)
 	write(w, m)
-	return "N_" .. tag .. COBS.encode(w.result())
+	return "N_" .. tag .. LibDeflate:EncodeForWoWAddonChannel(w.result())
 end
 
 local function Decode(payload, read)
-	local bytes = COBS.decode(payload:sub(4))
+	local bytes = LibDeflate:DecodeForWoWAddonChannel(payload:sub(4)) or error("не раскодировалось")
 	local r = Reader(bytes)
 	if r.bits(8) ~= FORMAT then error("неизвестный формат") end
 	local out = read(r)

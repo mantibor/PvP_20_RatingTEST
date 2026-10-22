@@ -54,6 +54,10 @@ local STEPS = {
 	-- 3. Сервер без «#» («Кронов-1602»), тип матча SS/RBG/5V5, из статов —
 	--    только победы в раундах соло-суматохи (16.10).
 	function(regionDB, matchDB) return "без «#», типы и статы коротко, матчей " .. Repack(regionDB, matchDB) end,
+
+	-- 4. «#» в старых записях («Кронов-#1602») снят до шагов — FixHashNames ниже;
+	--    у соло-суматохи нет фракций: из матчей SS убраны faction и winner (23.10).
+	function(regionDB, matchDB) return "«#» снят, SS без фракций, матчей " .. Repack(regionDB, matchDB) end,
 }
 
 -- Двоичный формат из PR #2 (ветка binary-cache, сборка 10.10-06) отменён. Кто
@@ -79,12 +83,41 @@ local function DropBinaryFormat(regionDB, matchDB)
 	end
 end
 
+-- «Кронов-#1602» (сборки 10.10–16.10) код больше не читает — переводим один раз,
+-- раньше остальных шагов: иначе они приняли бы «#1602» за название сервера.
+local function FixHash(v)
+	if type(v) == "string" then
+		local name, id = v:match("^([^%-]+)%-#(%d+)$")
+		return name and ns.UnpackName(name .. "-" .. id) or v
+	end
+	if type(v) ~= "table" then return v end
+	local out = {}
+	for k, x in pairs(v) do out[FixHash(k)] = FixHash(x) end
+	return out
+end
+
+local function FixHashNames(regionDB, matchDB)
+	local function fix(blob)
+		if type(blob) ~= "string" then return blob end -- блоб сжат, «#» внутри не видно — разжимаем все
+		local data = ns.DecodeEntry(blob)
+		return type(data) == "table" and ns.EncodeEntry(FixHash(data)) or blob
+	end
+	for _, key in ipairs({ "SkirmishData", "Whitelist", "Blacklist" }) do
+		if type(regionDB[key]) == "string" then regionDB[key] = fix(regionDB[key]) end
+	end
+	for ts, raw in pairs(matchDB) do
+		local blob = Blob(raw)
+		if type(ts) == "number" and type(blob) == "string" then matchDB[ts] = fix(blob) end
+	end
+end
+
 function ns.RunMigrations(regionDB, matchDB)
 	if not ns.CanCompress() then return end
 	DropBinaryFormat(regionDB, matchDB)
 	-- прежняя метка шага 1
 	local done = tonumber(regionDB["Schema"]) or (regionDB["RealmPack"] == 1 and 1 or 0)
 	regionDB["RealmPack"] = nil
+	if done < 4 then FixHashNames(regionDB, matchDB) end
 	for step = done + 1, #STEPS do
 		local note = STEPS[step](regionDB, matchDB)
 		done = step

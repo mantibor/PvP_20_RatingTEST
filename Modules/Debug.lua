@@ -467,7 +467,7 @@ local function PrintTimestampDataStyled(ts)
             else other[#other + 1] = score end
         end
     end
-    if mt == "random_bg" or mt == "wg_arena" then
+    if mt == "random_bg" or mt == "arena_5v5" then
         PrintLine(cFactionH .. "--- Horde (0): " .. #horde .. " ---" .. cReset)
         for _, s in ipairs(horde) do PrintPlayerStyled(s) end
         PrintLine(cFactionA .. "--- Alliance (1): " .. #alliance .. " ---" .. cReset)

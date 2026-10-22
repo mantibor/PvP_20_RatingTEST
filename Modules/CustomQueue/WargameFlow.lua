@@ -357,7 +357,7 @@ local function SendWargameRequest()
         WargameFail((isShuffle and "StartSoloShuffleWarGameByName" or "StartWarGameByName") .. " недоступна на этом клиенте", true)
         return
     end
-    local mapArg = ns.WargameMapArg(map)
+    local mapArg = map.name
     local ok, err = pcall(startFn, accountName .. " " .. mapArg)
     if ok then
         print("|cff00ff00[PvP20R Queue]|r Запрос на варгейм" .. (isShuffle and " (Суматоха)" or "") .. " отправлен: " .. receiver .. ", карта " .. mapArg)

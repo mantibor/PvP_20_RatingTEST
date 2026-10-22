@@ -107,12 +107,19 @@ local KEY_UNPACK = { SS = "SOLO_SHUFFLE", ["5V5"] = "ARENA_5V5" }
 local function MapFields(text, map)
     return (text:gsub("[^,]+", map))
 end
+-- Время в Q_STAT (третье поле) — секунд от начала сезона, как всё время в сети.
+local function ShiftStatTime(text, sign)
+    local head, t, tail = text:match("^(Q_STAT,[^,]*,)(%-?%d+)(.*)$")
+    if not head then return text end
+    return head .. string.format("%d", tonumber(t) + sign * ns.SeasonBase()) .. tail
+end
+
 -- Заодно серверы в именах — номерами (Utils/RealmPack.lua). Списки ников
 -- (H_LIST, H_LIST_RESP, WG_SETUP) — пакетом «N_…» (Utils/NamePack.lua), если он
 -- короче и разжимается точь-в-точь. Пакеты «N_…» дальше не трогаем.
 function ns.PackQueueKeys(text)
     if not ns.IsQueuePayload(text) or text:sub(1, 2) == "N_" then return text end
-    text = MapFields(text, KEY_PACK)
+    text = ShiftStatTime(MapFields(text, KEY_PACK), -1)
     local packed = ns.PackNamesInText(text)
     local bin = ns.PackNameMessage(text)
     if bin and #bin < #packed and ns.UnpackNameMessage(bin) == text then return bin end
@@ -125,7 +132,7 @@ function ns.UnpackQueueKeys(text)
         text = ns.UnpackNameMessage(text)
         if not text then return "" end
     end
-    return ns.UnpackNamesInText(MapFields(text, KEY_UNPACK))
+    return ShiftStatTime(ns.UnpackNamesInText(MapFields(text, KEY_UNPACK)), 1)
 end
 
 function ns.SendAddonMessage(channel, target, payload, prio)
