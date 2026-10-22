@@ -27,3 +27,15 @@ function ns.IsNew(ts)
 	if not ts or ts <= ns.EPOCH_MIN then return true end
 	return (time() - ts) <= ns.MAX_CACHE_AGE
 end
+
+--- GetServerTime(), округлённый вниз до минуты.
+function ns.GetServerTimeRounded()
+	return math.floor(GetServerTime() / 60) * 60
+end
+
+-- Время в пересылках — разница с началом сезона региона (ns.SEASON_START_UTC):
+-- точка одна у всех игроков региона, поэтому номер минуты отправителя не нужен.
+-- Записи до начала сезона дают отрицательную разницу — это нормально.
+function ns.SeasonBase()
+	return ns.SEASON_START_UTC[GetCurrentRegion()] or 0
+end

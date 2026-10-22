@@ -128,12 +128,15 @@ function ns.UpdateGlicko2Rating(guid, opponentRating, opponentRD, scoreOrWon, mo
     local newRD = updateRD(rec.rd, config.volatility, d2)
     newRD = math.max(config.minRD, newRD)
     
-    -- Сохраняем (в переданную db, либо в глобальную SkirmishDB)
-    rec.rating = newRating
-    rec.rd = newRD
+    -- Сохраняем (в переданную db, либо в глобальную SkirmishDB) — целыми:
+    -- в таблице итогов и лидерборде не должно быть дробей (просьба автора 23.10)
+    rec.rating = math.floor(newRating + 0.5)
+    rec.rd = math.floor(newRD + 0.5)
     rec.matches = (rec.matches or 0) + 1
-    rec.lastUpdate = time()
-    
+    -- lastUpdate не ставим: его ставит SaveSharedData следом. Поставленный
+    -- здесь, он равнялся её recency, и она выходила, не записав сыгранные,
+    -- победы, имя и класс.
+
     if rec.rating > (rec.bestRating or 0) then
         rec.bestRating = rec.rating
     end

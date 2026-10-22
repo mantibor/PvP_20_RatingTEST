@@ -181,14 +181,21 @@ local function UpdateSkirmishDBOnMatchComplete()
 		end
 	end
 	
+	-- соперник каждого — средний по другой команде (у врагов это наши)
 	local enemyAvgRating, enemyAvgRD = ns.GetTeamGlicko2Average(enemyGuids, "SKIRMISH")
+	local allyAvgRating, allyAvgRD = ns.GetTeamGlicko2Average(allyGuids, "SKIRMISH")
 	
 	local recency = time()
+	local result = {}
 	for _, s in ipairs(rows) do
 		local guid = ns.SafeGuid(s.guid)
 		if guid then
 			local won = (winnerFaction ~= nil) and (s.faction == winnerFaction)
-			local newRating, newRD = ns.UpdateGlicko2Rating(guid, enemyAvgRating, enemyAvgRD, won, "SKIRMISH")
+			local ally = (s.faction == myFaction)
+			local before = ns.SkirmishDB[guid] and tonumber(ns.SkirmishDB[guid].rating) or 0
+			local newRating, newRD = ns.UpdateGlicko2Rating(guid, ally and enemyAvgRating or allyAvgRating,
+				ally and enemyAvgRD or allyAvgRD, won, "SKIRMISH")
+			result[guid] = { old = before, new = newRating }
 			
 			local rec = ns.SkirmishDB[guid]
 			local name = (rec and rec.name) or (ns.FormatNameRealm and ns.FormatNameRealm(s.name)) or s.name
@@ -199,6 +206,9 @@ local function UpdateSkirmishDBOnMatchComplete()
 				(rec and tonumber(rec.won) or 0) + (won and 1 or 0), class, recency, prevBest)
 		end
 	end
+	-- новый рейтинг записан в базу — теперь его показывает таблица итогов (Scoreboard.lua)
+	ns.LastSkirmishResult = result
+	if ns.OnMatchSaved then ns.OnMatchSaved() end
 end
 
 function ns.HandleMatchStateChanged(frame)
@@ -206,6 +216,8 @@ function ns.HandleMatchStateChanged(frame)
 	local state = C_PvP.GetActiveMatchState and C_PvP.GetActiveMatchState()
 	
 	if state == Enum.PvPMatchState.Engaged and isLvl then
+		-- новый матч: итоги прошлого в таблице не показывать
+		ns.MatchArchived, ns.LastSkirmishResult = false, nil
 		local mt = ns.GetMatchType()
 		if mt then
 			ns.SetSnapshotActive(true, mt)
@@ -251,7 +263,9 @@ function ns.HandleMatchComplete()
 	currentMatchType = nil
 	local db = { matchType = mt, scores = {} }
 	
-	if C_PvP.GetActiveMatchWinner then
+	-- у соло-суматохи нет фракций: ни победителя-фракции, ни фракции игрока не храним
+	local isShuffle = (mt == "solo_shuffle")
+	if not isShuffle and C_PvP.GetActiveMatchWinner then
 		local ok, w = pcall(C_PvP.GetActiveMatchWinner)
 		if ok and (w == 0 or w == 1) and not (issecretvalue and issecretvalue(w)) then db.winner = w end
 	end
@@ -260,7 +274,7 @@ function ns.HandleMatchComplete()
 	
 	-- 🌟 ФОРМИРОВАНИЕ SCORES С ИНЖЕКЦИЕЙ ДАННЫХ ТРЕКЕРА
 	for key, row in pairs(liveSnapshot) do
-		local score = { guid = row.guid, name = row.name, class = row.class, faction = row.faction }
+		local score = { guid = row.guid, name = row.name, class = row.class, faction = not isShuffle and row.faction or nil }
 		
 		if db.matchType == "solo_shuffle" then
 			local finalWins = nil
@@ -324,11 +338,14 @@ function ns.HandleMatchComplete()
 	matchDB[ts] = db
 	table.insert(ns.ArchiveSortedKeys, ts)
 	table.sort(ns.ArchiveSortedKeys)
+	-- матч в архиве — симуляция рейтинга его уже видит (Scoreboard ждёт этого)
+	ns.MatchArchived = true
+	if ns.OnMatchSaved then ns.OnMatchSaved() end
 	
 	if ns.UpdateQueueButtonsStats then ns.UpdateQueueButtonsStats() end
 	
 	C_Timer.After(1, function()
-		local blob = ns.EncodeEntry(db)
+		local blob = ns.EncodeMatch(db)
 		if blob then ns.ArchiveCache[ts] = db; matchDB[ts] = blob end
 	end)
 end

@@ -12,15 +12,33 @@ local wgCustomButton = nil
 local expectedWargameFrom = nil
 local autoAcceptWargameUntil = 0
 local pendingWargameRequest = nil
+local opponentGroupReady = false
+local TrySendWargame
+local setupSent = {}
+local lastSetupNotice = {}
 local myTeamLeader = nil
 local autoAcceptInviteUntil = 0
-local hostFindResults = {}
+local function SendQueue(payload)
+    if ns.StateMachine and ns.StateMachine.SendQueueMessage then
+        ns.StateMachine.SendQueueMessage(payload)
+    end
+end
+
+local function Announce(text)
+    print("|cff00ff00[PvP20R Queue]|r " .. text)
+    SendQueue("Q_NOTE," .. (text:gsub(",", ";")))
+end
 
 -- ============================================================================
 -- UTILITIES (зависят от StateMachine)
 -- ============================================================================
 local function GetQueueRoster()
     return ns.StateMachine and ns.StateMachine.GetQueueRoster() or {}
+end
+
+local function GetQueueBucket(queueKey)
+    local bucket = queueKey and GetQueueRoster()[queueKey]
+    return type(bucket) == "table" and bucket or {}
 end
 
 local function GetConstraints(queueKey)
@@ -55,11 +73,13 @@ local function ResetWargameRequest()
     expectedWargameFrom = nil
     autoAcceptWargameUntil = 0
     pendingWargameRequest = nil
+    opponentGroupReady = false
 end
 
 local function ResetWargameState()
     wgReadyPause = false
     currentRoster = nil
+    myAssignedRole = nil
     wgReadyAccepted = {}
     wgReadyDeclined = {}
     ResetWargameRequest()
@@ -95,32 +115,28 @@ end
 -- ============================================================================
 -- TEAM BUILDING & HOST LOGIC
 -- ============================================================================
-local function CheckTeam(team, constraints)
-    local healers, subscribers = 0, 0
-    local roster = GetQueueRoster()
-    for _, name in ipairs(team) do
-        local data = roster[name]
-        if not data then return false end
-        if data.roles and data.roles:find("H") then healers = healers + 1 end
-        if data.subscribed then subscribers = subscribers + 1 end
-    end
-    if healers ~= constraints.healersPerTeam then return false end
-    if subscribers < constraints.minSubscribersPerTeam then return false end
-    return true
+-- Роли каждому в команде назначает хост (AssignTeamRoles в StateMachine): кто
+-- отметил только хила — хил; «хил + боец» — гибкий, хилом идёт, только если
+-- хилов не хватает. Раньше хилом считался любой с отметкой хила, и двое
+-- гибких в одной команде делали её «неправильной». nil — команду не собрать.
+local function CheckTeam(team, constraints, queueKey)
+    return ns.StateMachine and ns.StateMachine.AssignTeamRoles
+        and ns.StateMachine.AssignTeamRoles(queueKey, team, constraints)
 end
 
-local function HasCrossLink(teamA, teamB)
-    for _, u in ipairs(teamA) do
-        for _, v in ipairs(teamB) do
-            local r1 = hostFindResults[u]
-            local r2 = hostFindResults[v]
-            if (r1 and r1.friends and r1.friends[v]) or (r2 and r2.friends and r2.friends[u]) then
-                return true
-            end
-        end
+-- Когда хилов на две команды не хватило (relaxed): у каждого его первая роль.
+local function PreferredRoles(team, queueKey)
+    local bucket, roles = GetQueueBucket(queueKey), {}
+    for _, name in ipairs(team) do
+        local r = bucket[name] and bucket[name].roles or ""
+        roles[name] = r:find("D") and "DAMAGER" or r:find("H") and "HEALER" or r:find("T") and "TANK" or "DAMAGER"
     end
-    return false
+    return roles
 end
+
+local ROLE_CODE = { HEALER = "H", DAMAGER = "D", TANK = "T" }
+local ROLE_BY_CODE = { H = "HEALER", D = "DAMAGER", T = "TANK" }
+local myAssignedRole -- роль, назначенная мне хостом в текущем составе
 
 local function GenerateCombinations(n, k)
     local result, combo = {}, {}
@@ -140,29 +156,11 @@ local function GenerateCombinations(n, k)
     return result
 end
 
-local function FindSetup(players, constraints)
-    local n = #players
-    if n ~= constraints.totalPlayers then return nil end
-    for _, c in ipairs(GenerateCombinations(n, constraints.teamSize)) do
-        local inA = {}
-        local teamA, teamB = {}, {}
-        for _, idx in ipairs(c) do
-            inA[idx] = true
-            teamA[#teamA + 1] = players[idx]
-        end
-        for i = 1, n do
-            if not inA[i] then teamB[#teamB + 1] = players[i] end
-        end
-        if CheckTeam(teamA, constraints) and CheckTeam(teamB, constraints) and not HasCrossLink(teamA, teamB) then
-            return { teamA, teamB }
-        end
-    end
-    return nil
-end
-
-local function PickLeader(team)
+-- Объявлена до AssignLeaders: ниже по файлу local ещё не виден,
+-- и запасной выбор лидеров падал на вызове nil.
+local function PickLeader(team, queueKey)
     local best, bestTime = nil, math.huge
-    local roster = GetQueueRoster()
+    local roster = GetQueueBucket(queueKey)
     for _, name in ipairs(team) do
         local data = roster[name]
         if data and data.subscribed and not data.appearOffline then
@@ -174,6 +172,83 @@ local function PickLeader(team)
         end
     end
     return best
+end
+
+local function PickFriendLeaders(queueKey, teamA, teamB)
+    local bucket = GetQueueBucket(queueKey)
+    local function dataOf(name)
+        return bucket[name]
+    end
+    local function canLead(name)
+        local data = dataOf(name)
+        return data and data.subscribed
+    end
+    local bestSender, bestReceiver, bestTime
+    local function consider(sender, receiver)
+        if not canLead(sender) or not canLead(receiver) then return end
+        local recv = dataOf(receiver)
+        if not recv or recv.appearOffline then return end
+        local who = ns.StateMachine and ns.StateMachine.QueueFriendSender and ns.StateMachine.QueueFriendSender(queueKey, sender, receiver)
+        if who ~= sender then return end
+        local t = dataOf(sender).time or math.huge
+        if not bestSender or t < bestTime or (t == bestTime and sender < bestSender) then
+            bestSender, bestReceiver, bestTime = sender, receiver, t
+        end
+    end
+    for _, a in ipairs(teamA) do
+        for _, b in ipairs(teamB) do
+            consider(a, b)
+            consider(b, a)
+        end
+    end
+    return bestSender, bestReceiver
+end
+
+local function AssignLeaders(queueKey, teamA, teamB)
+    local sender, receiver = PickFriendLeaders(queueKey, teamA, teamB)
+    if sender and receiver then return sender, receiver, true end
+    sender = PickLeader(teamA, queueKey) or teamA[1]
+    receiver = PickLeader(teamB, queueKey) or teamB[1]
+    if not sender or not receiver or sender == receiver then return nil end
+    return sender, receiver, false
+end
+
+local function FindSetup(players, constraints, queueKey)
+    local n = #players
+    if n ~= constraints.totalPlayers then return nil end
+    local fallback
+    for _, c in ipairs(GenerateCombinations(n, constraints.teamSize)) do
+        local inA = {}
+        local teamA, teamB = {}, {}
+        for _, idx in ipairs(c) do
+            inA[idx] = true
+            teamA[#teamA + 1] = players[idx]
+        end
+        for i = 1, n do
+            if not inA[i] then teamB[#teamB + 1] = players[i] end
+        end
+        local rolesA = CheckTeam(teamA, constraints, queueKey)
+        local rolesB = rolesA and CheckTeam(teamB, constraints, queueKey)
+        if rolesA and rolesB then
+            local sender, receiver, friends = AssignLeaders(queueKey, teamA, teamB)
+            if sender and receiver then
+                for name, role in pairs(rolesB) do rolesA[name] = role end
+                local setup = { teamA, teamB, sender = sender, receiver = receiver, friends = friends, roles = rolesA }
+                if friends then return setup end
+                fallback = fallback or setup
+            end
+        end
+    end
+    if fallback then return fallback end
+    local teamA, teamB = {}, {}
+    for i, name in ipairs(players) do
+        if i <= constraints.teamSize then teamA[#teamA + 1] = name else teamB[#teamB + 1] = name end
+    end
+    local sender, receiver, friends = AssignLeaders(queueKey, teamA, teamB)
+    if not sender then sender, receiver = teamA[1], teamB[1] end
+    local roles = PreferredRoles(teamA, queueKey)
+    for name, role in pairs(PreferredRoles(teamB, queueKey)) do roles[name] = role end
+    return { teamA, teamB, sender = sender, receiver = receiver, friends = friends, relaxed = true, roles = roles }
 end
 
 local function PlaceLeaderFirst(team, leader)
@@ -188,31 +263,28 @@ end
 -- ============================================================================
 -- WARGAME COMMUNICATION
 -- ============================================================================
-local function SendReady()
-    if not currentRoster then return end
+-- Готовность — шёпотом только участникам состава (решение автора).
+local function WhisperRoster(payload, roster)
+    roster = roster or currentRoster
+    if not roster or not roster.set then return end
     local myName = ns.FormatNameRealm(UnitName("player"))
-    for name in pairs(currentRoster.set) do
-        if name ~= myName then ns.SendWhisper("WG_READY", name, "ALERT") end
+    for name in pairs(roster.set) do
+        if name ~= myName then ns.SendWhisper(payload, name, "ALERT") end
     end
 end
 
-local function SendReadyFail()
-    if not currentRoster then return end
-    local myName = ns.FormatNameRealm(UnitName("player"))
-    for name in pairs(currentRoster.set) do
-        if name ~= myName then ns.SendWhisper("WG_READY_FAIL", name, "ALERT") end
-    end
-end
+local function SendReady() WhisperRoster("WG_READY") end
+local function SendReadyFail() WhisperRoster("WG_READY_FAIL") end
 
-local function PickArenaMapID()
-    local ids = {}
+local function PickArenaMap()
+    local maps = {}
     if ns.MAPS then
         for _, m in ipairs(ns.MAPS) do
-            if m and m.pvpType == 4 and not m.isRandom and m.id then ids[#ids + 1] = m.id end
+            if m and m.pvpType == 4 and not m.isRandom and m.id then maps[#maps + 1] = m end
         end
     end
-    if #ids == 0 then return nil end
-    return ids[math.random(#ids)]
+    if #maps == 0 then return nil end
+    return maps[math.random(#maps)]
 end
 
 local function CanSendWargameRequest(roster)
@@ -229,76 +301,210 @@ local function CanSendWargameRequest(roster)
     return true
 end
 
+local function WargameFail(reason, tellOthers)
+    print("|cffff0000[PvP20R Queue]|r Варгейм не отправлен: " .. reason)
+    if tellOthers then WhisperRoster("WG_READY_FAIL") end
+    ResetWargameRequest()
+end
+
 local function SendWargameRequest()
     if not currentRoster then return end
-    local leaderA = currentRoster.teamA[1]
-    local leaderB = currentRoster.teamB[1]
-    if not leaderA or not leaderB then return end
-    local roster = GetQueueRoster()
-    local timeA = (roster[leaderA] and roster[leaderA].time) or 0
-    local timeB = (roster[leaderB] and roster[leaderB].time) or 0
-    local sender, receiver
-    if timeA < timeB or (timeA == timeB and leaderA < leaderB) then sender, receiver = leaderA, leaderB
-    else sender, receiver = leaderB, leaderA end
+    local sender = currentRoster.sender or currentRoster.teamA[1]
+    local receiver = currentRoster.receiver or currentRoster.teamB[1]
+    if not sender or not receiver then
+        WargameFail("не выбраны лидеры", false)
+        return
+    end
     local myName = ns.FormatNameRealm(UnitName("player"))
     if sender ~= myName and receiver ~= myName then return end
     if not BNetOnline(receiver) then
-        ns.SendWhisper("WG_READY_FAIL", receiver, "ALERT")
-        ResetWargameRequest()
+        WargameFail("принимающий лидер не в сети Battle.net: " .. receiver, true)
         return
     end
-    autoAcceptWargameUntil = GetTime() + 30
+    autoAcceptWargameUntil = GetTime() + 45
     if receiver == myName then
         expectedWargameFrom = sender
+        print("|cff00ff00[PvP20R Queue]|r Ждём вызов на варгейм от " .. sender .. ". Примем автоматически.")
         return
     end
     if not CanSendWargameRequest(currentRoster) then
-        ns.SendWhisper("WG_READY_FAIL", receiver, "ALERT")
-        ResetWargameRequest()
+        local n = GetNumGroupMembers(1) or 0
+        WargameFail("наша группа ещё не собрана (" .. n .. ")", false)
         return
     end
     local friend = ns.FindBNetFriendByNameRealm(receiver)
     if not friend then
-        ns.SendWhisper("WG_READY_FAIL", receiver, "ALERT")
-        ResetWargameRequest()
+        WargameFail(sender .. " не дружит в Battle.net с " .. receiver, true)
         return
     end
     local accountName = friend.accountName or friend.battleTag
-    if not accountName then return end
-    local mapID = PickArenaMapID()
-    if not mapID then
-        ns.SendWhisper("WG_READY_FAIL", receiver, "ALERT")
-        ResetWargameRequest()
+    if not accountName then
+        WargameFail("у друга нет BattleTag", true)
         return
     end
-    if not StartWarGameByName then
-        ns.SendWhisper("WG_READY_FAIL", receiver, "ALERT")
-        ResetWargameRequest()
+    local map = PickArenaMap()
+    if not map then
+        WargameFail("нет карты арены", true)
         return
     end
-    local ok, err = pcall(StartWarGameByName, accountName .. " " .. tostring(mapID))
-    if not ok then
-        ns.SendWhisper("WG_READY_FAIL", receiver, "ALERT")
-        ResetWargameRequest()
+    -- Очередь «Суматоха» запускает варгейм в режиме Суматохи: у Blizzard для
+    -- этого своя функция, ею работает команда /wargame для Solo Shuffle
+    -- (Blizzard_ChatFrameBase/Mainline/SlashCommandsOverrides.lua).
+    -- StartWarGameByName давала обычную арену 3×3 (проверено в игре 08.10).
+    local isShuffle = currentRoster.queueKey == "SOLO_SHUFFLE"
+    local startFn = isShuffle and StartSoloShuffleWarGameByName or StartWarGameByName
+    if not startFn then
+        WargameFail((isShuffle and "StartSoloShuffleWarGameByName" or "StartWarGameByName") .. " недоступна на этом клиенте", true)
+        return
+    end
+    local mapArg = map.name
+    local ok, err = pcall(startFn, accountName .. " " .. mapArg)
+    if ok then
+        print("|cff00ff00[PvP20R Queue]|r Запрос на варгейм" .. (isShuffle and " (Суматоха)" or "") .. " отправлен: " .. receiver .. ", карта " .. mapArg)
+    else
+        WargameFail("игра не дала отправить запрос (" .. tostring(err) .. ")", true)
     end
 end
 
 -- ============================================================================
 -- AUTO-ACCEPT LOGIC
 -- ============================================================================
-local function AutoAcceptWargame()
-    if GetTime() > autoAcceptWargameUntil then
-        ResetWargameRequest()
-        return
-    end
-    for i = 1, GetMaxBattlefieldID() do
-        if GetBattlefieldStatus(i) == "confirm" then
-            if pcall(AcceptBattlefieldPort, i, 1) then
-                ResetWargameRequest()
-                return
-            end
+-- Окно готовности аддон рисует на PVPReadyDialog Blizzard и прячет настоящую
+-- «Войти». PVPReadyDialog_Display её обратно не показывает (сверено с
+-- Blizzard_GroupFinder/Mainline/PVPHelper.lua) — на настоящем входе на арену
+-- кнопки не было.
+-- ============================================================================
+-- СПЕЦИАЛИЗАЦИЯ ПОД РОЛЬ (кнопки «Войти»)
+-- ============================================================================
+-- Роль на арене берётся из специализации, поэтому перед «Войти» специализация
+-- должна подходить под роль, которую назначил хост (myAssignedRole, приходит
+-- в составе). Если нет — кнопка сама меняет специализацию (каст), а после смены
+-- делает своё дело.
+-- Особые правила автора: маг в Огне и охотник в Стрельбе меняют специализацию
+-- всегда — Огонь на случайную, Стрельба на Повелителя зверей.
+local SPEC_FIRE, SPEC_MARKSMANSHIP, SPEC_BEAST_MASTERY = 63, 254, 253
+local SPEC_BANNED = { [SPEC_FIRE] = true, [SPEC_MARKSMANSHIP] = true }
+local SPEC_FORCED = { [SPEC_MARKSMANSHIP] = SPEC_BEAST_MASTERY }
+
+local specSwap         -- идёт смена: { button, onDone, waitCombat }
+local specPortButton   -- своя кнопка поверх настоящей «Войти» на входе на арену
+local ourPort          -- номер поля боя нашего варгейма (там и только там своя кнопка)
+local readyTimeoutFn   -- таймаут окна готовности
+
+local function SpecRoleOf(index)
+    local id, _, _, _, role = C_SpecializationInfo.GetSpecializationInfo(index)
+    return id, role
+end
+
+-- nil — специализация подходит (или роли нет: хост старой версии); номер — на какую
+-- сменить. Роль хост назначает из отмеченных игроком, а класс не может отметить
+-- чужую роль (маг — не хил), так что подходящая специализация есть всегда.
+local function SpecPlan(role)
+    local SI = C_SpecializationInfo
+    if not role or not (SI and SI.GetSpecialization and SI.SetSpecialization and SI.GetNumSpecializationsForClassID) then return nil end
+    local current = SI.GetSpecialization()
+    if not current or current == 0 then return nil end
+    local currentId, currentRole = SpecRoleOf(current)
+    if currentRole == role and not SPEC_BANNED[currentId] then return nil end
+    local forced = SPEC_FORCED[currentId]
+    local options = {}
+    for i = 1, SI.GetNumSpecializationsForClassID(select(3, UnitClass("player"))) or 0 do
+        local id, specRole = SpecRoleOf(i)
+        if i ~= current and specRole == role and not SPEC_BANNED[id] then
+            if id == forced then return i end
+            options[#options + 1] = i
         end
     end
+    -- несколько подходящих (жрец: Свет и Послушание) — случайная
+    return options[1] and options[math.random(#options)] or nil
+end
+
+local function FinishSpecSwap(success)
+    local swap = specSwap
+    specSwap = nil
+    if not swap then return end
+    swap.button:Enable()
+    if success then swap.onDone() end
+end
+
+-- В бою специализацию не сменить: кнопку выключаем заранее, но только если
+-- специализация действительно не подходит. Включится на PLAYER_REGEN_ENABLED.
+local function ApplyCombatLock(button)
+    if not (button and button:IsShown()) or specSwap or not InCombatLockdown() then return end
+    if not SpecPlan(myAssignedRole) then return end
+    button:Disable()
+    specSwap = { button = button, onDone = function() end, waitCombat = true }
+end
+
+-- Кнопка зовёт это вместо своего действия: подходит — сразу onDone,
+-- нет — смена специализации, кнопка выключена до конца каста.
+local function StartSpecSwap(button, onDone)
+    if specSwap then return end
+    local plan = SpecPlan(myAssignedRole)
+    if not plan then onDone(); return end
+    button:Disable()
+    if InCombatLockdown() then
+        specSwap = { button = button, onDone = onDone, waitCombat = true }
+        print("|cffff8000[PvP20R Queue]|r Специализация не подходит под роль, а в бою её не сменить. Кнопка включится после боя.")
+        return
+    end
+    if not C_SpecializationInfo.SetSpecialization(plan) then
+        button:Enable()
+        print("|cffff0000[PvP20R Queue]|r Игра не дала сменить специализацию.")
+        return
+    end
+    specSwap = { button = button, onDone = onDone }
+    local _, name = C_SpecializationInfo.GetSpecializationInfo(plan)
+    print("|cff00ff00[PvP20R Queue]|r Меняю специализацию на «" .. tostring(name) .. "» под вашу роль, после смены всё сработает само.")
+end
+
+local function RestoreEnterButton()
+    if wgCustomButton then wgCustomButton:Hide() end
+    if specPortButton then specPortButton:Hide() end
+    if PVPReadyDialog then
+        if PVPReadyDialog.enterButton then PVPReadyDialog.enterButton:Show() end
+        if PVPReadyDialog.EnterBattleButton then PVPReadyDialog.EnterBattleButton:Show() end
+    end
+end
+
+-- Вход на арену игра пускает только по клику игрока: AcceptBattlefieldPort
+-- из обработчика события дал ADDON_ACTION_FORBIDDEN (проверено в игре 20:22).
+-- Поэтому не жмём сами — возвращаем кнопку и зовём игрока.
+-- На настоящем окне входа: своя кнопка поверх «Войти», пока специализация не
+-- подходит под роль; после смены — снова настоящая (её жмёт игрок).
+local function ShowSpecPortButton()
+    local real = PVPReadyDialog and (PVPReadyDialog.enterButton or PVPReadyDialog.EnterBattleButton)
+    if not real then return end
+    if not specPortButton then
+        specPortButton = CreateFrame("Button", nil, PVPReadyDialog, "UIPanelButtonTemplate")
+        specPortButton:SetAllPoints(real)
+        specPortButton:SetScript("OnClick", function(self)
+            StartSpecSwap(self, RestoreEnterButton)
+        end)
+    end
+    specPortButton:SetText(real:GetText())
+    if wgCustomButton then wgCustomButton:Hide() end
+    if PVPReadyDialog.enterButton then PVPReadyDialog.enterButton:Hide() end
+    if PVPReadyDialog.EnterBattleButton then PVPReadyDialog.EnterBattleButton:Hide() end
+    specPortButton:Show()
+    ApplyCombatLock(specPortButton)
+end
+
+local function AutoAcceptWargame()
+    for i = 1, GetMaxBattlefieldID() do
+        if GetBattlefieldStatus(i) == "confirm" then
+            if GetTime() <= autoAcceptWargameUntil then
+                ourPort = i -- вызов на этот варгейм ждали мы: своя кнопка уместна
+                ResetWargameRequest()
+                PlaySound(SOUNDKIT.READY_CHECK)
+                print("|cff00ff00[PvP20R Queue]|r Арена готова — нажмите «Войти».")
+            end
+            -- чужой вызов на арену (не наш варгейм) — всегда обычная кнопка Blizzard
+            if ourPort == i and SpecPlan(myAssignedRole) then ShowSpecPortButton() else RestoreEnterButton() end
+            return
+        end
+    end
+    ourPort = nil
 end
 
 local function OnPartyInvite(inviterName, inviterRealm)
@@ -311,7 +517,13 @@ local function OnPartyInvite(inviterName, inviterRealm)
     if not inviterName or inviterName == "" then return false end
     local inviterNameRealm = ns.FormatNameRealm(inviterName, inviterRealm)
     if not inviterNameRealm or inviterNameRealm ~= myTeamLeader then return false end
+    -- Так же принимает кнопка «Принять» Blizzard (GameDialogDefs.lua, PARTY_INVITE).
+    -- C_PartyInfo.AcceptInvite в клиенте нет — ветка была мёртвой.
     AcceptGroup()
+    -- Окно приглашения при скрытии без пометки «принято» само зовёт DeclineGroup
+    -- (PARTY_INVITE.OnHide) — ставим пометку, как это делает кнопка.
+    local dialog = StaticPopup_FindVisible and StaticPopup_FindVisible("PARTY_INVITE")
+    if dialog then dialog.inviteAccepted = 1 end
     if StaticPopup_Hide then StaticPopup_Hide("PARTY_INVITE") end
     myTeamLeader = nil
     autoAcceptInviteUntil = 0
@@ -360,19 +572,69 @@ local function LeaveQueues()
 end
 
 local function ClearMyQueueForWargame()
-    local leaving = {}
     if ns.StateMachine then
-        LeaveQueueByKey()
+        LeaveQueueByKey(nil) -- состояние варгейма остаётся: дальше сбор групп
     end
 end
 
-local function InviteTeam(team, myName)
-    if not team then return end
+local function NameInMyGroup(nameRealm)
+    if not nameRealm then return false end
+    if ns.FormatNameRealm(UnitName("player")) == nameRealm then return true end
+    if not IsInGroup() then return false end
+    for i = 1, 4 do
+        local unit = "party" .. i
+        if UnitExists(unit) and ns.FormatNameRealm(UnitName(unit)) == nameRealm then
+            return true
+        end
+    end
+    return false
+end
+
+local function InviteMissing(team, myName)
+    if not team or not C_PartyInfo or not C_PartyInfo.InviteUnit then return end
     for _, name in ipairs(team) do
-        if name ~= myName then
+        if name ~= myName and not NameInMyGroup(name) then
             C_PartyInfo.InviteUnit(name)
         end
     end
+end
+
+-- LeaveParty срабатывает не сразу. Пока лидер ещё в старой группе,
+-- инвайт отвечает «уже состоит в группе». Ждём выход, потом зовём тех, кого ещё нет.
+local function BeginTeamForm(team, myName, savedRoster)
+    local constraints = GetConstraints(savedRoster.queueKey)
+    local teamSize = (constraints and constraints.teamSize) or #team
+    pendingWargameRequest = {
+        roster = savedRoster,
+        teamSize = teamSize,
+        deadline = GetTime() + 45,
+    }
+    local tries = 0
+    local function tick()
+        if not pendingWargameRequest or pendingWargameRequest.roster ~= savedRoster then return end
+        if GetTime() > pendingWargameRequest.deadline then return end
+        tries = tries + 1
+        if IsInGroup() and tries <= 8 then
+            C_Timer.After(0.5, tick)
+            return
+        end
+        InviteMissing(team, myName)
+        local n = GetNumGroupMembers(1) or 0
+        if n < teamSize and tries < 16 then
+            C_Timer.After(1.5, tick)
+        end
+    end
+    C_Timer.After(0.5, tick)
+    C_Timer.After(45, function()
+        if not pendingWargameRequest or pendingWargameRequest.roster ~= savedRoster then return end
+        local n = GetNumGroupMembers(1) or 0
+        if n < pendingWargameRequest.teamSize then
+            print("|cffff0000[PvP20R Queue]|r Варгейм не отправлен: наша группа не собралась (" .. n .. "/" .. pendingWargameRequest.teamSize .. ")")
+        elseif savedRoster.sender == myName and not opponentGroupReady then
+            print("|cffff0000[PvP20R Queue]|r Варгейм не отправлен: вторая команда не сообщила, что собралась")
+        end
+        TrySendWargame()
+    end)
 end
 
 -- ============================================================================
@@ -384,14 +646,18 @@ local function BuildReadyInfo()
     local roleCounts   = { HEALER = 0, TANK = 0, DAMAGER = 0 }
     local roleAccepted = { HEALER = 0, TANK = 0, DAMAGER = 0 }
     local roleDeclined = { HEALER = 0, TANK = 0, DAMAGER = 0 }
-    local roster = GetQueueRoster()
+    local roster = GetQueueBucket(queueKey)
     if currentRoster and currentRoster.set then
         for nameRealm in pairs(currentRoster.set) do
-            local role = "DAMAGER"
+            -- роль от хоста; у хоста старой версии ролей нет — по отметкам, как раньше
+            local role = currentRoster.roles and currentRoster.roles[nameRealm]
             local data = roster[nameRealm]
-            if data and data.roles then
-                if data.roles:find("H") then role = "HEALER"
-                elseif data.roles:find("T") then role = "TANK" end
+            if not role then
+                role = "DAMAGER"
+                if data and data.roles then
+                    if data.roles:find("H") then role = "HEALER"
+                    elseif data.roles:find("T") then role = "TANK" end
+                end
             end
             roleCounts[role] = roleCounts[role] + 1
             if wgReadyAccepted[nameRealm] then roleAccepted[role] = roleAccepted[role] + 1 end
@@ -431,18 +697,23 @@ local function OnAllReady()
             PVPReadyDialog:Hide()
         end
     end
-    if wgCustomButton then
-        wgCustomButton:Hide()
-    end
+    RestoreEnterButton()
 
     local myTeam, myName, isLeader = GetMyTeam()
+    local savedRoster = currentRoster
+    -- startHide = true: окно покажет итог и само закроется по таймеру
+    -- Blizzard (PvpPopup.lua, OnUpdate). С false оно висело до конца.
     if PVPReadyPopup then
-        PVPReadyPopup.startHide = false
+        PVPReadyPopup.startHide = true
         PVPReadyPopup:Setup(BuildReadyInfo())
     end
 
     if IsInGroup() then
-        LeaveParty()
+        if C_PartyInfo and C_PartyInfo.LeaveParty then
+            C_PartyInfo.LeaveParty()
+        elseif LeaveParty then
+            LeaveParty()
+        end
     end
 
     LeaveQueues()
@@ -456,10 +727,8 @@ local function OnAllReady()
         autoAcceptInviteUntil = 0
     end
 
-    if isLeader and myTeam then
-        C_Timer.After(1.0, function()
-            InviteTeam(myTeam, myName)
-        end)
+    if isLeader and myTeam and savedRoster then
+        BeginTeamForm(myTeam, myName, savedRoster)
     end
 
     wgReadyPause = false
@@ -468,9 +737,20 @@ local function OnAllReady()
     RefreshFrames()
 end
 
+-- Состав из шести кириллических имён приходит по частям и потому позже
+-- коротких WG_READY. Кто нажал «Войти» быстро, присылал согласие тем, у кого
+-- окно ещё не открылось, — его выбрасывали, и у опоздавших счёт не доходил
+-- до шести: группа не собиралась (20:08, Диффамация и Меро). Копим такие
+-- согласия и засчитываем, когда окно откроется.
+local earlyReady = {}
+
 local function OnReady(sender)
     local senderNameRealm = ns.FormatNameRealm(sender)
-    if not senderNameRealm or not wgReadyPause then return end
+    if not senderNameRealm then return end
+    if not wgReadyPause then
+        earlyReady[senderNameRealm] = GetTime()
+        return
+    end
     if not IsInRoster(senderNameRealm) then return end
     wgReadyAccepted[senderNameRealm] = true
     if PVPReadyPopup and PVPReadyPopup:IsShown() then
@@ -526,6 +806,13 @@ local function ShowWargameSetupPopup(queueKey)
             queueKey = queueKey
         }
     end
+    for name, at in pairs(earlyReady) do
+        if GetTime() - at < 15 and IsInRoster(name) then
+            wgReadyAccepted[name] = true
+            if ns.QLog then ns.QLog("засчитал раннее «Войти» от " .. name) end
+        end
+    end
+    earlyReady = {}
     local index = 1
     for i = 1, GetMaxBattlefieldID() do
         if GetBattlefieldStatus(i) == "none" then
@@ -549,6 +836,7 @@ local function ShowWargameSetupPopup(queueKey)
         role = "DAMAGER"
     end
 
+    role = myAssignedRole or role -- окно Blizzard покажет значок назначенной хостом роли
     PVPReadyDialog_Display(PVPReadyDialog, index, displayName, isRated, queueType, gameType, role)
     if not PVPReadyDialog or not PVPReadyDialog:IsShown() then return end
     if PVPReadyDialog.enterButton then
@@ -562,8 +850,12 @@ local function ShowWargameSetupPopup(queueKey)
         local real = PVPReadyDialog.enterButton or PVPReadyDialog.EnterBattleButton
         wgCustomButton:SetAllPoints(real)
         wgCustomButton:SetText(real:GetText())
-        wgCustomButton:SetScript("OnClick", function(self)
-            if not wgReadyPause then return end
+        local function AcceptReady(self)
+            if not wgReadyPause then return end -- окно закрылось, пока шла смена специализации
+            if wgResultTimer then
+                wgResultTimer:Cancel()
+                wgResultTimer = nil
+            end
             wgReadyAccepted[ns.FormatNameRealm(UnitName("player"))] = true
             SendReady()
             if StaticPopupSpecial_Hide then
@@ -578,12 +870,39 @@ local function ShowWargameSetupPopup(queueKey)
             end
             local queueKey = currentRoster and currentRoster.queueKey
             if GetReadyCount() >= GetConstraints(queueKey).totalPlayers then OnAllReady() end
+        end
+        wgCustomButton:SetScript("OnClick", function(self)
+            if not wgReadyPause then return end
+            StartSpecSwap(self, function() AcceptReady(self) end)
         end)
     end
+    wgCustomButton:Enable()
     wgCustomButton:Show()
-    wgResultTimer = C_Timer.NewTimer(10.0, function()
+    ApplyCombatLock(wgCustomButton)
+    readyTimeoutFn = function()
         wgResultTimer = nil
         if not wgReadyPause then return end
+        local myName = ns.FormatNameRealm(UnitName("player"))
+        if myName and wgReadyAccepted[myName] then
+            -- Кто не получил состав (старая версия без склейки длинных
+            -- сообщений), тот и отказа не пришлёт: остальные висели в окне
+            -- готовности бесконечно. Ещё 10 с — и сдаёмся, называя виноватых.
+            local roster = currentRoster
+            C_Timer.After(10, function()
+                if not wgReadyPause or currentRoster ~= roster or not roster or not roster.set then return end
+                local missing = {}
+                for name in pairs(roster.set) do
+                    if not wgReadyAccepted[name] then missing[#missing + 1] = name end
+                end
+                print("|cffff0000[PvP20R Queue]|r Готовность не собралась, нет «Войти» от: "
+                    .. table.concat(missing, ", ") .. ". Хост пересоберёт матч через минуту.")
+                wgReadyPause = false
+                if PVPReadyPopup and PVPReadyPopup:IsShown() then PVPReadyPopup:Hide() end
+                RestoreEnterButton()
+                RefreshFrames()
+            end)
+            return
+        end
         SendReadyFail()
         if PVPReadyDialog and PVPReadyDialog:IsShown() then
             if StaticPopupSpecial_Hide then
@@ -597,22 +916,57 @@ local function ShowWargameSetupPopup(queueKey)
         end
         PlaySound(SOUNDKIT.LFG_DENIED)
         LeaveQueueByKey()
-    end)
+        ResetWargameState()
+    end
+    wgResultTimer = C_Timer.NewTimer(10.0, readyTimeoutFn)
 end
 
+-- Хост шлёт состав и в гильдию, и шёпотом; длинный шёпот по частям
+-- доходит на несколько секунд позже. Второй приход открывал окно заново
+-- и стирал уже нажатые «Войти», проверка готовности не сходилась никогда.
+local lastSetupMessage, lastSetupAt = nil, 0
+
 local function OnWargameSetup(sender, message)
+    if message == lastSetupMessage and GetTime() - lastSetupAt < 30 then
+        if ns.QLog then ns.QLog("состав пришёл повторно, пропускаю") end
+        return
+    end
+    lastSetupMessage, lastSetupAt = message, GetTime()
     local parts = {}
     for part in message:gmatch("([^,]+)") do parts[#parts + 1] = part end
     if #parts >= 4 then
         local queueKey = parts[2]
         local teamA, teamB = {}, {}
-        for name in parts[3]:gmatch("([^;]+)") do teamA[#teamA + 1] = name end
-        for name in parts[4]:gmatch("([^;]+)") do teamB[#teamB + 1] = name end
+        -- Лидеры помечены в самом составе: «*» — вызывает, «+» — принимает.
+        -- Прежний формат дописывал их имена ещё раз пятым и шестым полем.
+        -- После имени — роль от хоста: «=H», «=D», «=T» (до пометки лидера).
+        local sender, receiver = parts[5], parts[6]
+        local roles = {}
+        local function add(team, token)
+            local name, mark = token:match("^(.-)([%*%+]?)$")
+            local base, code = name:match("^(.-)=([THD])$")
+            if base then name = base; roles[name] = ROLE_BY_CODE[code] end
+            team[#team + 1] = name
+            if mark == "*" then sender = name elseif mark == "+" then receiver = name end
+        end
+        for token in parts[3]:gmatch("([^;]+)") do add(teamA, token) end
+        for token in parts[4]:gmatch("([^;]+)") do add(teamB, token) end
         if #teamA > 0 and #teamB > 0 and (queueKey == "SOLO_SHUFFLE" or queueKey == "ARENA_5V5") then
             local set = {}
             for _, name in ipairs(teamA) do set[name] = true end
             for _, name in ipairs(teamB) do set[name] = true end
-            currentRoster = { teamA = teamA, teamB = teamB, set = set, queueKey = queueKey }
+            -- Состав слышат все в гильдии и вайтлисте. Окно «Войти» показывалось
+            -- и тем, кого в нём нет; не нажал за 10 с — аддон выкидывал его из
+            -- очереди (20:15, Лоренс и Эксп).
+            if not set[ns.FormatNameRealm(UnitName("player"))] then
+                if ns.QLog then ns.QLog("состав без меня, окно не показываю") end
+                return
+            end
+            currentRoster = {
+                teamA = teamA, teamB = teamB, set = set, queueKey = queueKey,
+                sender = sender, receiver = receiver, roles = roles,
+            }
+            myAssignedRole = roles[ns.FormatNameRealm(UnitName("player"))]
             ShowWargameSetupPopup(queueKey)
         end
     end
@@ -622,36 +976,116 @@ end
 -- HOST DISTRIBUTION
 -- ============================================================================
 local function HostDistributeWargames(queueKey)
-    local roster = GetQueueRoster()
+    -- Раньше флаг ставился навсегда: после одной сорвавшейся попытки
+    -- (кто-то не нажал «Войти», вышел) хост молчал до /reload.
+    if setupSent[queueKey] and GetTime() - setupSent[queueKey] < 60 then
+        if ns.QLog then ns.QLog("хост: состав уже рассылал " .. math.floor(GetTime() - setupSent[queueKey]) .. " с назад, жду") end
+        return
+    end
+    if ns.QLog then ns.QLog("хост: раскладываю команды") end
+    local bucket = GetQueueBucket(queueKey)
     local myName = ns.FormatNameRealm(UnitName("player"))
     local hostName, minTime = nil, math.huge
-    for nameRealm, data in pairs(roster) do
-        if data.time < minTime or (data.time == minTime and (not hostName or nameRealm < hostName)) then
-            minTime = data.time
+    for nameRealm, data in pairs(bucket) do
+        local queuedAt = type(data) == "table" and data.time or nil
+        if type(queuedAt) == "number" and (queuedAt < minTime or (queuedAt == minTime and (not hostName or nameRealm < hostName))) then
+            minTime = queuedAt
             hostName = nameRealm
         end
     end
     if hostName ~= myName then return end
     local constraints = GetConstraints(queueKey)
+    if not constraints then return end
     local players = {}
-    for name in pairs(roster) do players[#players + 1] = name end
-    if #players ~= constraints.totalPlayers then return end
-    local setup = FindSetup(players, constraints)
-    if not setup then return end
+    for name in pairs(bucket) do players[#players + 1] = name end
+    if #players < constraints.totalPlayers then return end
+    if #players > 12 then
+        table.sort(players, function(a, b)
+            local ta = bucket[a] and bucket[a].time or math.huge
+            local tb = bucket[b] and bucket[b].time or math.huge
+            if ta == tb then return a < b end
+            return ta < tb
+        end)
+        local trimmed = {}
+        for i = 1, 12 do trimmed[i] = players[i] end
+        players = trimmed
+    end
+    local setup
+    if #players == constraints.totalPlayers then
+        setup = FindSetup(players, constraints, queueKey)
+    else
+        local noticeKey = queueKey .. ":size"
+        local now = GetTime()
+        if not lastSetupNotice[noticeKey] or now - lastSetupNotice[noticeKey] > 30 then
+            lastSetupNotice[noticeKey] = now
+            print("|cff00ff00[PvP20R Queue]|r В очереди " .. #players .. ", для матча нужно " .. constraints.totalPlayers .. ". Собираю группу из них.")
+        end
+        for _, combo in ipairs(GenerateCombinations(#players, constraints.totalPlayers)) do
+            local subset = {}
+            for _, idx in ipairs(combo) do subset[#subset + 1] = players[idx] end
+            setup = FindSetup(subset, constraints, queueKey)
+            if setup then break end
+        end
+    end
+    if ns.QLog then
+        local pairsSeen = {}
+        local friendOf = ns.StateMachine and ns.StateMachine.QueueFriendSender
+        for i = 1, #players do
+            for j = i + 1, #players do
+                if friendOf and friendOf(queueKey, players[i], players[j]) then
+                    pairsSeen[#pairsSeen + 1] = players[i] .. "+" .. players[j]
+                end
+            end
+        end
+        ns.QLog("хост: друзья по опросу: " .. (#pairsSeen > 0 and table.concat(pairsSeen, ", ") or "нет")
+            .. (friendOf and "" or " (QueueFriendSender нет — старый StateMachine)"))
+        if setup then
+            ns.QLog("хост: лидеры " .. tostring(setup.sender) .. " -> " .. tostring(setup.receiver)
+                .. (setup.friends and ", друзья" or ", НЕ друзья") .. (setup.relaxed and ", хилы не поровну" or ""))
+        end
+    end
+    if not setup or not setup.sender or not setup.receiver then
+        Announce("Матч не собрался: некого поставить лидерами. В очереди " .. #players .. ".")
+        return
+    end
+    if setup.relaxed then
+        Announce("Хилов не хватило на две ровные команды. Матч всё равно собирается из " .. constraints.totalPlayers .. " человек.")
+    elseif not setup.friends then
+        Announce("Лидеры не друзья в Battle.net (" .. setup.sender .. " и " .. setup.receiver .. "). Матч собирается, вызов может не уйти.")
+    end
     local teamA, teamB = setup[1], setup[2]
-    local leaderA = PickLeader(teamA)
-    local leaderB = PickLeader(teamB)
-    if not leaderA or not leaderB then return end
-    PlaceLeaderFirst(teamA, leaderA)
-    PlaceLeaderFirst(teamB, leaderB)
-    local roster = { teamA = teamA, teamB = teamB, set = {}, queueKey = queueKey }
+    local sender, receiver = setup.sender, setup.receiver
+    PlaceLeaderFirst(teamA, sender)
+    PlaceLeaderFirst(teamB, receiver)
+    if teamA[1] ~= sender then
+        PlaceLeaderFirst(teamA, receiver)
+        PlaceLeaderFirst(teamB, sender)
+    end
+    local roster = {
+        teamA = teamA, teamB = teamB, set = {}, queueKey = queueKey,
+        sender = sender, receiver = receiver, roles = setup.roles or {},
+    }
     for _, name in ipairs(teamA) do roster.set[name] = true end
     for _, name in ipairs(teamB) do roster.set[name] = true end
+    setupSent[queueKey] = GetTime()
     currentRoster = roster
-    local msg = "WG_SETUP," .. queueKey .. "," .. table.concat(teamA, ";") .. "," .. table.concat(teamB, ";")
-    for _, name in ipairs(players) do
-        if name ~= myName then ns.SendWhisper(msg, name, "ALERT") end
+    myAssignedRole = roster.roles[myName]
+    print("|cff00ff00[PvP20R Queue]|r Лидеры: " .. sender .. " вызывает " .. receiver)
+    -- Имена лидеров не дублируем пятым и шестым полем, а помечаем на месте:
+    -- 311 байт → 241 на шести кириллических именах, состав влезает в одно
+    -- сообщение (предел 255 байт). Замер — 09.10, LibDeflate давал 186.
+    -- после имени — роль от хоста (=H/=D/=T), специализацию игрок подгоняет под неё
+    local roles = setup.roles or {}
+    local function marked(team)
+        local out = {}
+        for i, name in ipairs(team) do
+            local code = ROLE_CODE[roles[name]]
+            out[i] = name .. (code and ("=" .. code) or "") .. (name == sender and "*" or name == receiver and "+" or "")
+        end
+        return table.concat(out, ";")
     end
+    local msg = "WG_SETUP," .. queueKey .. "," .. marked(teamA) .. "," .. marked(teamB)
+    SendQueue(msg)
     ShowWargameSetupPopup(queueKey)
 end
 
@@ -663,13 +1097,19 @@ local function OnMessage(sender, message)
     local myName = ns.FormatNameRealm(UnitName("player"))
     local senderNameRealm = ns.FormatNameRealm(sender)
     local isSelf = (senderNameRealm == myName)
-    if wgReadyPause and not IsInRoster(senderNameRealm) and message:sub(1, 7) ~= "QLEAVE," then return end
+    if wgReadyPause and not IsInRoster(senderNameRealm) and message:sub(1, 8) ~= "Q_LEAVE," then return end
     if message:sub(1, 9) == "WG_SETUP," then
         OnWargameSetup(sender, message)
-    elseif message:sub(1, 8) == "WG_READY" and not isSelf then
-        OnReady(sender)
+    elseif message:sub(1, 14) == "WG_GROUP_READY" and not isSelf then
+        opponentGroupReady = true
+        print("|cff00ff00[PvP20R Queue]|r Вторая команда собрана.")
+        TrySendWargame()
+    -- WG_READY_FAIL тоже начинается с WG_READY: проверять его первым,
+    -- иначе отказ засчитывался как согласие.
     elseif message:sub(1, 13) == "WG_READY_FAIL" and not isSelf then
         OnReadyFail(sender)
+    elseif message:sub(1, 8) == "WG_READY" and not isSelf then
+        OnReady(sender)
     end
 end
 
@@ -680,10 +1120,7 @@ local function HandleReload()
     if not (wgReadyPause or pendingWargameRequest) then return end
     local roster = currentRoster or (pendingWargameRequest and pendingWargameRequest.roster)
     if roster and roster.set then
-        local myName = ns.FormatNameRealm(UnitName("player"))
-        for name in pairs(roster.set) do
-            if name ~= myName then ns.SendWhisper("WG_READY_FAIL", name, "ALERT") end
-        end
+        WhisperRoster("WG_READY_FAIL", roster)
     end
     wgReadyPause = false
     currentRoster = nil
@@ -694,17 +1131,44 @@ local function HandleReload()
     RefreshFrames()
 end
 
-local function HandleGroupRosterUpdate()
+function TrySendWargame()
     if not pendingWargameRequest then return end
-    if GetTime() > pendingWargameRequest.deadline then return end
+    local request = pendingWargameRequest
+    if GetTime() > request.deadline then return end
     local n = GetNumGroupMembers(1) or 0
-    if n >= pendingWargameRequest.teamSize then
-        local r = pendingWargameRequest.roster
-        pendingWargameRequest = nil
-        currentRoster = r
-        SendWargameRequest()
-        currentRoster = nil
+    if n < request.teamSize then return end
+    local roster = request.roster
+    local myName = ns.FormatNameRealm(UnitName("player"))
+    currentRoster = roster
+    -- Группа собрана — окну готовности больше нечего показывать.
+    if PVPReadyPopup and PVPReadyPopup:IsShown() and StaticPopupSpecial_Hide then
+        StaticPopupSpecial_Hide(PVPReadyPopup)
     end
+    if roster.receiver == myName then
+        if not request.announced then
+            request.announced = true
+            -- нужен только вызывающему лидеру — шёпотом ему, а не всем
+            if roster.sender then ns.SendWhisper("WG_GROUP_READY", roster.sender, "ALERT") end
+            expectedWargameFrom = roster.sender
+            autoAcceptWargameUntil = GetTime() + 45
+            print("|cff00ff00[PvP20R Queue]|r Наша команда собрана. Ждём вызов от " .. tostring(roster.sender))
+        end
+        return
+    end
+    if roster.sender ~= myName then return end
+    if not opponentGroupReady then
+        if not request.waitingPrinted then
+            request.waitingPrinted = true
+            print("|cff00ff00[PvP20R Queue]|r Наша команда собрана. Ждём, пока соберётся вторая.")
+        end
+        return
+    end
+    pendingWargameRequest = nil
+    SendWargameRequest()
+end
+
+local function HandleGroupRosterUpdate()
+    TrySendWargame()
 end
 
 -- ============================================================================
@@ -714,10 +1178,18 @@ local f = CreateFrame("Frame")
 f:RegisterEvent("CHAT_MSG_ADDON")
 f:RegisterEvent("PARTY_INVITE_REQUEST")
 f:RegisterEvent("UPDATE_BATTLEFIELD_STATUS")
+f:RegisterEvent("WARGAME_REQUESTED")
+-- смена специализации под роль: завершилась / каст прервался / бой кончился
+f:RegisterEvent("ACTIVE_PLAYER_SPECIALIZATION_CHANGED")
+f:RegisterUnitEvent("UNIT_SPELLCAST_INTERRUPTED", "player")
+f:RegisterUnitEvent("UNIT_SPELLCAST_FAILED", "player")
+f:RegisterEvent("PLAYER_REGEN_ENABLED")
+f:RegisterEvent("PLAYER_REGEN_DISABLED")
 f:SetScript("OnEvent", function(self, event, ...)
     if event == "CHAT_MSG_ADDON" then
         local prefix, text, _, sender = ...
         if prefix == ns.PREFIX and text and text ~= "" then
+            text = ns.UnpackQueueKeys(text)
             if text:sub(1, 9) == "WG_SETUP,"
             or text:sub(1, 8) == "WG_READY"
             or text:sub(1, 13) == "WG_READY_FAIL" then
@@ -729,6 +1201,28 @@ f:SetScript("OnEvent", function(self, event, ...)
         OnPartyInvite(inviterName, inviterRealm)
     elseif event == "UPDATE_BATTLEFIELD_STATUS" then
         AutoAcceptWargame()
+    elseif event == "ACTIVE_PLAYER_SPECIALIZATION_CHANGED" then
+        if specSwap and not specSwap.waitCombat then FinishSpecSwap(SpecPlan(myAssignedRole) == nil) end
+    elseif event == "UNIT_SPELLCAST_INTERRUPTED" or event == "UNIT_SPELLCAST_FAILED" then
+        -- каст прервали — кнопка снова активна, жать можно ещё раз
+        if specSwap and not specSwap.waitCombat then FinishSpecSwap(false) end
+    elseif event == "PLAYER_REGEN_ENABLED" then
+        if specSwap and specSwap.waitCombat then FinishSpecSwap(false) end
+    elseif event == "PLAYER_REGEN_DISABLED" then
+        -- InCombatLockdown() ещё false в момент события — проверяем на следующем кадре
+        C_Timer.After(0, function()
+            ApplyCombatLock(wgCustomButton)
+            ApplyCombatLock(specPortButton)
+        end)
+    elseif event == "WARGAME_REQUESTED" then
+        if not (expectedWargameFrom and GetTime() <= autoAcceptWargameUntil and WarGameRespond) then return end
+        local ok, err = pcall(WarGameRespond, true)
+        if ok then
+            print("|cff00ff00[PvP20R Queue]|r Вызов на варгейм принят.")
+            if PVPFramePopup and StaticPopupSpecial_Hide then StaticPopupSpecial_Hide(PVPFramePopup) end
+        else
+            print("|cffff0000[PvP20R Queue]|r Игра не дала принять варгейм автоматически (" .. tostring(err) .. "). Нажмите Принять в окне вызова.")
+        end
     end
 end)
 
@@ -743,4 +1237,20 @@ ns.WargameFlow = {
     HostDistributeWargames = HostDistributeWargames,
     HandleReload = HandleReload,
     HandleGroupRosterUpdate = HandleGroupRosterUpdate,
+    -- для /dev: назначенная хостом роль и что сделает кнопка «Войти»
+    GetAssignedRole = function() return myAssignedRole end,
+    SpecPlan = function(role) return SpecPlan(role or myAssignedRole) end,
+    -- Для /pvp20r dev: снимок внутреннего состояния, только чтение.
+    GetDebugState = function()
+        return {
+            readyPause = wgReadyPause,
+            roster = currentRoster,
+            accepted = wgReadyAccepted,
+            pending = pendingWargameRequest,
+            opponentGroupReady = opponentGroupReady,
+            expectedFrom = expectedWargameFrom,
+            acceptLeft = autoAcceptWargameUntil - GetTime(),
+            myTeamLeader = myTeamLeader,
+        }
+    end,
 }

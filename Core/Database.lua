@@ -30,6 +30,9 @@ end
 -- ============================================================================
 -- GENERIC DB COMPRESSION / DECOMPRESSION
 -- ============================================================================
+-- эти ключи хранятся в коротком виде (Utils/Compact.lua): { сжать, развернуть }
+local COMPACT = { SkirmishData = { ns.CompactSkirmish, ns.ExpandSkirmish } }
+
 function ns.CompressDB(regionKey, sourceTable, filterFn)
     if not ns.CanCompress() or type(sourceTable) ~= "table" then return end
     local regionDB = ns.GetRegionDB()
@@ -44,6 +47,7 @@ function ns.CompressDB(regionKey, sourceTable, filterFn)
         regionDB[regionKey] = nil
         return
     end
+    if COMPACT[regionKey] then data = COMPACT[regionKey][1](data) end
     local blob = ns.EncodeEntry(data)
     if blob then regionDB[regionKey] = blob end
 end
@@ -54,6 +58,7 @@ function ns.DecompressDB(regionKey, targetTable, filterFn)
     local data
     if type(raw) == "string" then
         data = ns.DecodeEntry(raw)
+        if COMPACT[regionKey] and type(data) == "table" then data = COMPACT[regionKey][2](data) end
     elseif type(raw) == "table" then
         data = raw
     end
@@ -123,7 +128,8 @@ end
 
 function ns.AddPlayer(nameRealm)
     if not nameRealm or nameRealm == "" or ns.IsBlacklisted(nameRealm) then return end
-    ns.GetWhitelistDB()[nameRealm] = time()
+    -- время сервера: оно одно у всех, а вайтлист пересылается между игроками
+    ns.GetWhitelistDB()[nameRealm] = GetServerTime()
 end
 
 -- ============================================================================
@@ -277,13 +283,31 @@ function ns.SeasonReset(regionDB, matchDB)
     regionDB["SeasonReset"] = seasonStart
 end
 
+-- Игрок из своего региона? Сервер GUID решает, если LibRealmInfo его знает
+-- (NA-игрок в EU-базе удаляется). Библиотека не обновлялась с 2021 и многих
+-- нынешних номеров не знает (у тестера — 73 EU-игрока из 189) — тогда решает
+-- сервер из ника. Не нашёлся ни тот, ни другой — запись удаляется.
+local function InMyRegion(guid, nameRealm)
+    local server = type(guid) == "string" and tonumber(guid:match("^Player%-(%d+)%-"))
+    local region = server and ns.RealmRegionById(server)
+    if region then return region == ns.RealmRegion() end
+    local realm = type(nameRealm) == "string" and nameRealm:match("%-([^%-]+)$")
+    return realm ~= nil and ns.RealmIdOf(realm) ~= nil
+end
+
 function ns.Cleanup()
     for guid, rec in pairs(ns.SkirmishDB) do
         if type(guid) == "string" and type(rec) == "table" then
-            if ns.IsBlacklisted(rec.name) or (tonumber(rec.rating) or 0) <= 0 then
+            if ns.IsBlacklisted(rec.name) or (tonumber(rec.rating) or 0) <= 0 or not InMyRegion(guid, rec.name) then
                 ns.SkirmishDB[guid] = nil
             end
         end
+    end
+    -- вайтлист: кого не слышали месяц (ns.MAX_CACHE_AGE) или чей сервер не из
+    -- этого региона — убираем
+    local wl, now = ns.GetWhitelistDB(), GetServerTime()
+    for name, ts in pairs(wl) do
+        if type(ts) ~= "number" or now - ts > ns.MAX_CACHE_AGE or not InMyRegion(nil, name) then wl[name] = nil end
     end
 end
 
@@ -300,6 +324,10 @@ f:SetScript("OnEvent", function(self, event, arg1)
         
         Migrate(regionDB, matchDB)
         
+        -- шаги перевода сохранений — Migration.lua; до InitArchiveKeys, чтобы
+        -- убранные миграцией матчи не попали в список ключей
+        ns.RunMigrations(regionDB, matchDB)
+
         if ns.InitArchiveKeys then
             ns.InitArchiveKeys()
         end

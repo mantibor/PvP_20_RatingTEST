@@ -5,7 +5,7 @@
 ## Category: LvL20
 ## Version: 2.3.0
 ## IconTexture: Interface\ICONS\achievement_featsofstrength_gladiator_07
-## SavedVariables: PvP_20_RatingDB, PvP20RLeaderboardSettings
+## SavedVariables: PvP_20_RatingDB, PvP20RLeaderboardSettings, PvP20RDevLog
 ## SavedVariablesPerCharacter: PVP20RCharDB
 
 Libs\LibStub\LibStub.lua
@@ -15,6 +15,7 @@ Libs\LibDeflate\LibDeflate.lua
 Libs\AceSerializer-3.0\AceSerializer-3.0.lua
 Libs\ChatThrottleLib\ChatThrottleLib.lua
 Libs\AceComm-3.0\AceComm-3.0.lua
+Libs\LibRealmInfo\LibRealmInfo.lua
 
 Config\Constants.lua
 Config\Localization.lua
@@ -24,9 +25,13 @@ Config\PvPTiers.lua
 Utils\Player.lua
 Utils\Time.lua
 Utils\Compression.lua
+Utils\RealmPack.lua
+Utils\Compact.lua
+Utils\NamePack.lua
 Utils\RatingMath.lua
 
 Core\Database.lua
+Core\Migration.lua
 Core\Rating.lua
 Core\Match.lua
 Core\Comm.lua
@@ -46,7 +51,8 @@ Modules\Leaderboard\Leaderboard.xml
 
 Modules\CustomQueue\StateMachine.lua
 Modules\CustomQueue\WargameFlow.lua
+Modules\CustomQueue\DevMenu.lua
 
-# -- Modules\Scoreboard.lua
+Modules\Scoreboard.lua
 Modules\InspectQueue.lua
 Modules\Debug.lua

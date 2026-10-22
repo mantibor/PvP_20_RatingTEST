@@ -123,9 +123,13 @@ end
 local function EscapeRaw(text, maxLen)
     maxLen = maxLen or 200
     local s = text:sub(1, maxLen)
-    s = s:gsub("([^\32-\126])", function(c)
-        return string.format("\x%02X", c:byte())
-    end)
+    -- Кодом показываем только управляющие байты. Раньше кодировался всякий
+    -- байт вне ASCII, и кириллица (два байта UTF-8 на букву) читалась как
+    -- xD0x9A...; "\x" Lua 5.1 к тому же не знает и теряет обратную черту.
+    -- "|" удваиваем, чтобы чат не принял кусок сообщения за цветовой код.
+    s = s:gsub("[%z\1-\31\127]", function(c)
+        return string.format("\\x%02X", c:byte())
+    end):gsub("|", "||")
     if #text > maxLen then
         s = s .. "|cff888888... [+" .. (#text - maxLen) .. " chars]|r"
     end
@@ -463,7 +467,7 @@ local function PrintTimestampDataStyled(ts)
             else other[#other + 1] = score end
         end
     end
-    if mt == "random_bg" or mt == "wg_arena" then
+    if mt == "random_bg" or mt == "arena_5v5" then
         PrintLine(cFactionH .. "--- Horde (0): " .. #horde .. " ---" .. cReset)
         for _, s in ipairs(horde) do PrintPlayerStyled(s) end
         PrintLine(cFactionA .. "--- Alliance (1): " .. #alliance .. " ---" .. cReset)
@@ -734,6 +738,10 @@ RegisterCommand("sr", function(rest)
     PrintLine("Final Rating: " .. cRating .. currentRating .. "|r")
     PrintLine("Total Matches: " .. matchCount .. (weeklyCount > 0 and " (weekly: " .. weeklyCount .. ")" or ""))
 end, "симуляция рейтинга (/pvp20r sr <name|target|Name-Realm> <rbg|arena5v5|ss>)")
+
+RegisterCommand("dev", function()
+    if ns.ToggleQueueDev then ns.ToggleQueueDev() end
+end, "окно очереди и варгейма: кто в реге, лидеры, журнал шагов")
 
 RegisterCommand("help", function()
     PrintHeader("PvP20R Debug Commands")

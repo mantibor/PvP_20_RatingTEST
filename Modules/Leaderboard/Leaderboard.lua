@@ -61,7 +61,7 @@ LD.RATING_FILTERS = {
 LD.BRACKET_ARCHIVE_CONFIG = {
 	RANDOM_BATTLEGROUNDS = { matchTypes = { "random_bg" },    useRounds = false },
 	SOLO_SHUFFLE         = { matchTypes = { "solo_shuffle" }, useRounds = true  },
-	WARGAMES             = { matchTypes = { "wg_arena" },     useRounds = false },
+	WARGAMES             = { matchTypes = { "arena_5v5" },     useRounds = false },
 }
 
 LD.ACCENT_MAP = {
@@ -87,24 +87,10 @@ LD.CYRILLIC_TO_LATIN = {
 	["Э"] = "E", 	["э"] = "e", 	["Ю"] = "Iu", 	["ю"] = "iu", 	["Я"] = "Ia", 	["я"] = "ia",
 }
 
-LD.REALM_TRANSLATIONS = {
-	["Азурегос"] = 		"Azuregos", 		["Борейскаятундра"] = 	"BoreanTundra",
-	["ВечнаяПесня"] = 	"Eversong", 		["Галакронд"] = 		"Galakrond",
-	["Голдринн"] = 		"Goldrinn", 		["Гордунни"] = 			"Gordunni",
-	["Гром"] = 			"Grom", 			["Дракономор"] = 		"Fordragon",
-	["Корольлич"] = 	"LichKing", 		["ПиратскаяБухта"] = 	"BootyBay",
-	["Подземье"] = 		"Deepholm", 		["Разувий"] = 			"Razuvious",
-	["Ревущийфьорд"] = 	"HowlingFjord", 	["СвежевательДуш"] = 	"Soulflayer",
-	["Седогрив"] = 		"Greymane", 		["СтражСмерти"] = 		"Deathguard",
-	["Термоштепсель"] = "Thermaplugg", 		["ТкачСмерти"] = 		"Deathweaver",
-	["ЧерныйШрам"] = 	"Blackscar", 		["Ясеневыйлес"] = 		"Ashenvale",
-}
-
 -- ============================================================================
 -- LOCAL UTILITIES (Используются ТОЛЬКО внутри Leaderboard.lua)
 -- ============================================================================
--- Примечание: Таблицы маппинга (ns.ACCENT_MAP, ns.CYRILLIC_TO_LATIN, ns.REALM_TRANSLATIONS) 
--- остаются в Config/Strings.lua как ns.*, так как это статичные конфиги.
+-- Английское имя сервера — из LibRealmInfo (ns.RealmEnglishName, слитно: HowlingFjord).
 
 function LD.NormalizeString(text)
 	if not text then return "" end
@@ -122,13 +108,7 @@ end
 
 function LD.LocalizeRealm(realm)
 	if not realm or realm == "" then return realm end
-	local exact = LD.REALM_TRANSLATIONS[realm]
-	if exact then return exact end
-	local clean = realm:gsub("[%s%-]", ""):lower()
-	for cyr, eng in pairs(LD.REALM_TRANSLATIONS) do
-		if cyr:gsub("[%s%-]", ""):lower() == clean then return eng end
-	end
-	return LD.TransliterateName(realm)
+	return ns.RealmEnglishName((realm:gsub("%s+", ""))) or LD.TransliterateName(realm)
 end
 
 function LD.DisplayName(fullName)
@@ -312,7 +292,7 @@ local function InitializeRow(row, elementData)
 	if not row or not elementData then return end
 	local e = elementData
 	local widths = {}
-	for _, col in ipairs(ns.COLUMN_INFO) do widths[col.key] = col.width end
+	for _, col in ipairs(LD.COLUMN_INFO) do widths[col.key] = col.width end
 	
 	if row.Rank then row.Rank:SetWidth(math.max(widths.rank - 6, 1)) end
 	if row.Name then row.Name:SetWidth(math.max(widths.name - 30, 1)) end

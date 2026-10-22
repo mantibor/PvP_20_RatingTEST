@@ -146,12 +146,9 @@ local function GetArchiveTotals()
 		if btnKey then
 			local w, l = 0, 0
 			if data.matchType == "solo_shuffle" then
+				-- только раунды: фракций у соло-суматохи нет
 				local rw, rl = ns.GetShuffleRoundsForGuid and ns.GetShuffleRoundsForGuid(data, myGuid)
-				if rw then w, l = rw, rl
-				else
-					local r = GetArchivedMatchResult(data, myGuid)
-					if r == "win" then w = 1 elseif r == "loss" then l = 1 end
-				end
+				if rw then w, l = rw, rl end
 			else
 				local r = GetArchivedMatchResult(data, myGuid)
 				if r == "win" then w = 1 elseif r == "loss" then l = 1 end
@@ -178,12 +175,9 @@ local function AggregateArchiveForTypes(typeSet)
 		if data and typeSet[data.matchType] then
 			local p, w = 0, 0
 			if data.matchType == "solo_shuffle" then
-				local rw, rl, total = ns.GetShuffleRoundsForGuid and ns.GetShuffleRoundsForGuid(data, myGuid)
-				if rw then p, w = rw + rl, rw
-				else
-					local r = GetArchivedMatchResult(data, myGuid)
-					if r == "win" then p, w = 1, 1 elseif r == "loss" then p = 1 end
-				end
+				-- только раунды: фракций у соло-суматохи нет
+				local rw, rl = ns.GetShuffleRoundsForGuid and ns.GetShuffleRoundsForGuid(data, myGuid)
+				if rw then p, w = rw + rl, rw end
 			else
 				local r = GetArchivedMatchResult(data, myGuid)
 				if r == "win" then p, w = 1, 1 elseif r == "loss" then p = 1 end

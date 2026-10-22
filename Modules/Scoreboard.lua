@@ -5,7 +5,7 @@ local L = ns.L
 -- STATE
 -- ============================================================================
 ns._skirmishRatings = ns._skirmishRatings or {}
-ns._skirmishRatingsByIndex = ns._skirmishRatingsByIndex or {}
+ns._skirmishRatingsByName = ns._skirmishRatingsByName or {}
 ns.lastArenaApprox = nil
 
 -- ============================================================================
@@ -44,12 +44,48 @@ local function CachedRating(guid)
     return 0, false
 end
 
+-- «Имя-Сервер» строки счёта; nil — имя секретное или пустое
+local function RowName(s)
+    local name = s and s.name
+    if type(name) ~= "string" or name == "" or (issecretvalue and issecretvalue(name)) then return nil end
+    return ns.FormatNameRealm(name)
+end
+
+-- Во время матча GUID секретный — находим его по «Имя-Сервер»: в кэше стычек
+-- и в уже разобранных матчах архива. Таблица собирается на каждый пересчёт.
+local guidByName = {}
+local function BuildGuidByName()
+    wipe(guidByName)
+    for guid, rec in pairs(ns.SkirmishDB or {}) do
+        if type(rec) == "table" and rec.name then guidByName[rec.name] = guid end
+    end
+    for _, data in pairs(ns.ArchiveCache or {}) do
+        if type(data) == "table" and type(data.scores) == "table" then
+            for _, sc in pairs(data.scores) do
+                if type(sc) == "table" and sc.guid and sc.name then guidByName[sc.name] = sc.guid end
+            end
+        end
+    end
+end
+
+local function RowGuid(s)
+    return ns.SafeGuid(s.guid) or guidByName[RowName(s) or ""]
+end
+
+-- Строка таблицы → данные рейтинга: по GUID, а во время матча — по «Имя-Сервер»
+local function Remember(s, entry)
+    local guid = ns.SafeGuid(s.guid)
+    if guid then ns._skirmishRatings[guid] = entry end
+    local name = RowName(s)
+    if name then ns._skirmishRatingsByName[name] = entry end
+end
+
 -- ============================================================================
 -- MAIN RECOMPUTE
 -- ============================================================================
 local function RecomputeRatings()
     wipe(ns._skirmishRatings)
-    wipe(ns._skirmishRatingsByIndex)
+    wipe(ns._skirmishRatingsByName)
     ns.lastArenaApprox = nil
 
     local kind = GetLocalMatchType()
@@ -57,128 +93,86 @@ local function RecomputeRatings()
 
     local rows = GetScoreRows()
     if #rows == 0 then return end
+    BuildGuidByName()
 
     local myGuid = UnitGUID("player")
+    local myName = ns.FormatNameRealm(UnitName("player"))
     local myFaction
     for _, s in ipairs(rows) do
-        if ns.SafeGuid(s.guid) == myGuid then
+        if ns.SafeGuid(s.guid) == myGuid or RowName(s) == myName then
             myFaction = s.faction
             break
         end
     end
     if myFaction == nil then myFaction = 0 end
 
-    local winnerFaction
-    if GetBattlefieldWinner then
-        local w = GetBattlefieldWinner()
-        if w == 0 or w == 1 then winnerFaction = w end
-    end
-
     local matchComplete = C_PvP.IsMatchComplete and C_PvP.IsMatchComplete()
+    local entries, mine = {}, nil
 
     if kind == "random_bg" or kind == "arena_5v5" then
+        -- После конца матча изменение берём из симуляции Glicko-2 по архиву
+        -- (Rating.lua). Пока Match.lua не записал этот матч в архив
+        -- (ns.MatchArchived), симуляция его не знает — показываем без изменения.
+        local archived = matchComplete and ns.MatchArchived
         local archiveKey = (kind == "arena_5v5") and "wargame" or "randomBG"
-        local allySumPost, allyN = 0, 0
-        local enemySumPost, enemyN = 0, 0
-        local playerData = {}
-
-        for i, s in ipairs(rows) do
-            local guid = ns.SafeGuid(s.guid)
-            local postRating = 0
-            if ns.GetArchiveStatsForGuid then
+        for _, s in ipairs(rows) do
+            local guid = RowGuid(s)
+            local postRating, lastChange = 0, 0
+            if guid and ns.GetArchiveStatsForGuid then
                 local stats = ns.GetArchiveStatsForGuid(guid)
                 if stats and stats[archiveKey] then
                     postRating = stats[archiveKey].rating or 0
+                    lastChange = stats[archiveKey].lastChange or 0
                 end
             end
-            playerData[i] = {
-                guid = guid, faction = s.faction, postRating = postRating,
-                won = (winnerFaction ~= nil) and (s.faction == winnerFaction),
-            }
-            if s.faction == myFaction then allySumPost = allySumPost + postRating; allyN = allyN + 1
-            else enemySumPost = enemySumPost + postRating; enemyN = enemyN + 1 end
-        end
-
-        local realAllyAvgPost = allyN > 0 and math.floor(allySumPost / allyN + 0.5) or 0
-        local realEnemyAvgPost = enemyN > 0 and math.floor(enemySumPost / enemyN + 0.5) or 0
-        local allySumOld, allyNOld = 0, 0
-        local enemySumOld, enemyNOld = 0, 0
-
-        for i, data in ipairs(playerData) do
-            local guid = data.guid
-            local postRating = data.postRating
-            local won = data.won
             local entry
-
-            if matchComplete then
-                local enemyAvg = (data.faction == myFaction) and realEnemyAvgPost or realAllyAvgPost
-                local calcDelta = ns.CalculateBGRatingDelta and ns.CalculateBGRatingDelta(postRating, enemyAvg, won) or 0
-                local oldRating = postRating - calcDelta
-                if oldRating < 0 then oldRating = 0; calcDelta = postRating end
-                entry = { new = postRating, change = calcDelta, old = oldRating, hasData = true }
+            if archived then
+                local oldRating = math.max(postRating - lastChange, 0)
+                entry = { new = postRating, change = postRating - oldRating, old = oldRating, hasData = true }
             else
                 entry = { new = postRating, change = 0, old = postRating, hasData = postRating > 0 }
             end
-
-            ns._skirmishRatingsByIndex[i] = entry
-            if guid then ns._skirmishRatings[guid] = entry end
-
-            local avgVal = matchComplete and entry.old or entry.new
-            if entry.hasData then
-                if data.faction == myFaction then allySumOld = allySumOld + avgVal; allyNOld = allyNOld + 1
-                else enemySumOld = enemySumOld + avgVal; enemyNOld = enemyNOld + 1 end
-            end
-        end
-
-        local realAllyAvg = allyNOld > 0 and math.floor(allySumOld / allyNOld + 0.5) or 0
-        local realEnemyAvg = enemyNOld > 0 and math.floor(enemySumOld / enemyNOld + 0.5) or 0
-        local mine = myGuid and ns._skirmishRatings[myGuid] or nil
-
-        if mine then
-            ns.lastArenaApprox = {
-                approxRating = mine.new, ratingChange = mine.change, oldRating = mine.old,
-                realAllyAvg = realAllyAvg, realEnemyAvg = realEnemyAvg,
-                allyKnownCount = allyNOld, enemyKnownCount = enemyNOld,
-            }
+            entry.ally = (s.faction == myFaction)
+            entries[#entries + 1] = entry
+            Remember(s, entry)
+            if guid == myGuid then mine = entry end
         end
     else
-        -- ARENA SKIRMISH
-        local allySum, allyN = 0, 0
-        local enemySum, enemyN = 0, 0
+        -- ARENA SKIRMISH. Своего прогноза нет: во время матча — рейтинг из кэша,
+        -- после — тот, что Match.lua посчитал и записал в базу (ns.LastSkirmishResult).
+        local result = matchComplete and ns.LastSkirmishResult
         for _, s in ipairs(rows) do
-            local r, hasR = CachedRating(s.guid)
-            if hasR then
-                if s.faction == myFaction then allySum = allySum + r; allyN = allyN + 1
-                else enemySum = enemySum + r; enemyN = enemyN + 1 end
+            local guid = RowGuid(s)
+            local r = result and guid and result[guid]
+            local entry
+            if r then
+                entry = { old = r.old, new = r.new, change = r.new - r.old, hasData = true }
+            else
+                local old, has = CachedRating(guid)
+                entry = { old = old, new = old, change = 0, hasData = has }
             end
+            entry.ally = (s.faction == myFaction)
+            entries[#entries + 1] = entry
+            Remember(s, entry)
+            if guid == myGuid then mine = entry end
         end
-        local realAllyAvg = allyN > 0 and math.floor(allySum / allyN + 0.5) or 0
-        local realEnemyAvg = enemyN > 0 and math.floor(enemySum / enemyN + 0.5) or 0
-        local BASELINE = 1500
-        local function EffectiveAvg(avg, count) return count > 0 and avg or BASELINE end
-        local effAllyAvg = EffectiveAvg(realAllyAvg, allyN)
-        local effEnemyAvg = EffectiveAvg(realEnemyAvg, enemyN)
+    end
 
-        for i, s in ipairs(rows) do
-            local isAlly = (s.faction == myFaction)
-            local won = (winnerFaction ~= nil) and (s.faction == winnerFaction)
-            local guid = ns.SafeGuid(s.guid)
-            local old, has = CachedRating(guid)
-            local newRating = ns.ComputeNewRatingSkirmish(old, has, won, isAlly and effEnemyAvg or effAllyAvg, isAlly and effAllyAvg or effEnemyAvg)
-            local change = has and (newRating - old) or 0
-            local entry = { new = has and newRating or 0, change = change, old = has and old or 0, hasData = has }
-            ns._skirmishRatingsByIndex[i] = entry
-            if guid then ns._skirmishRatings[guid] = entry end
+    -- Средний рейтинг команд — по рейтингу «до матча»
+    local allySum, allyN, enemySum, enemyN = 0, 0, 0, 0
+    for _, entry in ipairs(entries) do
+        if entry.hasData then
+            if entry.ally then allySum, allyN = allySum + entry.old, allyN + 1
+            else enemySum, enemyN = enemySum + entry.old, enemyN + 1 end
         end
-
-        local mine = myGuid and ns._skirmishRatings[myGuid] or nil
-        if mine and mine.hasData then
-            ns.lastArenaApprox = {
-                approxRating = mine.new, ratingChange = mine.change, oldRating = mine.old,
-                realAllyAvg = realAllyAvg, realEnemyAvg = realEnemyAvg,
-                allyKnownCount = allyN, enemyKnownCount = enemyN,
-            }
-        end
+    end
+    if mine and mine.hasData then
+        ns.lastArenaApprox = {
+            approxRating = mine.new, ratingChange = mine.change, oldRating = mine.old,
+            realAllyAvg = allyN > 0 and math.floor(allySum / allyN + 0.5) or 0,
+            realEnemyAvg = enemyN > 0 and math.floor(enemySum / enemyN + 0.5) or 0,
+            allyKnownCount = allyN, enemyKnownCount = enemyN,
+        }
     end
 end
 
@@ -369,17 +363,17 @@ local function SetupPVPMatchHooks()
     -- 1) Hook ConstructPVPMatchTable с отложенным выполнением
     if not ns._pvpMatchTableHooked and _G.ConstructPVPMatchTable then
         ns._pvpMatchTableHooked = true
+        -- Соло-суматоха пропускается только ради колонки раундов (рейтинговых колонок у неё нет)
+        local function Wanted() return IsSupportedPvPMatch() or GetLocalMatchType() == "solo_shuffle" end
         hooksecurefunc("ConstructPVPMatchTable", function(tableBuilder, useAlternateColor)
-            if not IsSupportedPvPMatch() then return end
+            if not Wanted() then return end
             ns._pendingTableBuilder = tableBuilder
             ns._pendingUseAlt = useAlternateColor
             C_Timer.After(0, function()
                 local tb = ns._pendingTableBuilder
                 if not tb then return end
                 ns._pendingTableBuilder = nil
-                if not IsSupportedPvPMatch() then return end
-
-                RecomputeRatings()
+                if not Wanted() then return end
 
                 local kind = GetLocalMatchType()
                 local textPadding = 15
@@ -395,6 +389,11 @@ local function SetupPVPMatchHooks()
                     col:ConstructCells("FRAME", "PVPCellStringTemplate", ROUNDS_KEY, useAlternateColor)
                     MoveRoundsColumnBeforeKillingBlows(tb, col)
                 end
+
+                -- своя колонка раундов — только если игра не нарисовала свою
+                if kind == "solo_shuffle" then tb:Arrange(); return end
+
+                RecomputeRatings()
 
                 local matchComplete = C_PvP.IsMatchComplete and C_PvP.IsMatchComplete()
                 if matchComplete then
@@ -428,7 +427,8 @@ local function SetupPVPMatchHooks()
                 local info
                 local guid = ns.SafeGuid(rowData and rowData.guid)
                 if guid then info = ns._skirmishRatings[guid] end
-                if not info and type(dataIndex) == "number" then info = ns._skirmishRatingsByIndex[dataIndex] end
+                -- во время матча GUID секретный — по «Имя-Сервер»
+                if not info then info = ns._skirmishRatingsByName[RowName(rowData) or ""] end
 
                 if not info or not info.hasData then
                     if self.text then self.text:SetText("0") end
@@ -526,6 +526,15 @@ f:SetScript("OnEvent", function(_, event, arg1)
         end
     end
 end)
+
+-- Match.lua записал матч (архив БГ или новый рейтинг стычки) — пересчитать
+-- таблицу уже по записанному и попросить у игры свежий счёт, чтобы клетки обновились.
+function ns.OnMatchSaved()
+    if not IsSupportedPvPMatch() then return end
+    RecomputeRatings()
+    UpdateEarningsRating()
+    if RequestBattlefieldScoreData then RequestBattlefieldScoreData() end
+end
 
 -- ============================================================================
 -- EXPORT
